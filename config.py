@@ -285,6 +285,13 @@ VAD_SILENCE_MS: int = _get_int("VAD_SILENCE_MS", 600)     # пауза, посл
 VAD_MIN_SPEECH_MS: int = _get_int("VAD_MIN_SPEECH_MS", 400)
 VAD_MAX_SPEECH_S: float = _get_float("VAD_MAX_SPEECH_S", 15.0)
 
+# Кто расшифровывает речь в войсе:
+#   whisper — отдельная модель (настройки ниже), ~0.3–0.6 с на фразу;
+#   gemma   — та же Gemma, что отвечает (слышит звук сама): точнее на русском и с именами, Whisper не
+#             грузится (минус ~1 ГБ видеопамяти), но каждый ответ дольше на ~2.5 с — запрос расшифровки
+#             выбивает из кэша Ollama промпт персонажа.  Модель войса должна уметь audio (gemma4).
+VOICE_HEARING: str = _get_str("VOICE_HEARING", "whisper").lower()
+
 # large-v3-turbo — заметно лучше small на русском, на RTX ~0.3–0.6 с на фразу.
 WHISPER_MODEL: str = _get_str("WHISPER_MODEL", "large-v3-turbo")  # small/medium/large-v3/large-v3-turbo
 WHISPER_DEVICE: str = _get_str("WHISPER_DEVICE", "auto")  # auto / cuda / cpu
@@ -398,9 +405,6 @@ VOICE_PROACTIVE_THRESHOLD: float = _get_float("VOICE_PROACTIVE_THRESHOLD", 0.45)
 VOICE_PROACTIVE_COOLDOWN_S: int = _get_int("VOICE_PROACTIVE_COOLDOWN_S", 25)
 # Сколько секунд после её реплики разговор считается продолжением разговора с ней.
 VOICE_FOLLOWUP_WINDOW_S: int = _get_int("VOICE_FOLLOWUP_WINDOW_S", 25)
-# Слух: whisper — фразы расшифровывает Whisper, модель отвечает на текст;
-# gemma — модель сама слушает запись, отвечает и потом пишет, что услышала (Whisper не грузится).
-VOICE_HEARING: str = _get_str("VOICE_HEARING", "whisper").lower()
 # Прогрев модели при входе в войс и в простое — быстрый первый ответ.
 VOICE_WARMUP: bool = _get_bool("VOICE_WARMUP", True)
 

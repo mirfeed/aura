@@ -1,5 +1,6 @@
 """
-voice/stt.py — Day 4: распознавание речи через faster-whisper.
+voice/stt.py — Day 4: распознавание речи через faster-whisper
+(или самой Gemma — ``GemmaSTT``, при VOICE_HEARING=gemma).
 
 * Модель грузится лениво, в отдельном потоке (``load()``), чтобы не
   блокировать event loop.
@@ -19,12 +20,15 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
 import numpy as np
 
 import config
 from utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from pipeline.text import TextPipeline
 
 _logger = get_logger("bot.voice.stt")
 
@@ -203,3 +207,53 @@ class SpeechToText:
 
     def close(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+def wav_b64(audio: np.ndarray, sr: int = 16000) -> str:
+    """Фраза (float32, 16 кГц, моно) → WAV в base64: так звук принимает Ollama (в поле images)."""
+    import base64
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes((np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes())
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+class GemmaSTT:
+    """
+    VOICE_HEARING=gemma: фразы расшифровывает та же Gemma, что и отвечает, — тот же интерфейс, что у
+    SpeechToText.  Точнее Whisper на русской речи и именах, Whisper не грузится (минус ~1 ГБ видеопамяти),
+    но каждый ответ дольше на ~2.5 с (см. TextPipeline.transcribe_audio).
+    """
+
+    ready = True
+
+    def __init__(self, pipeline: "TextPipeline") -> None:
+        self._pipeline = pipeline
+
+    async def load(self) -> None:
+        return None
+
+    async def transcribe(self, audio: np.ndarray, names: Optional[List[str]] = None) -> str:
+        t0 = time.monotonic()
+        text = _collapse_repeats(await self._pipeline.transcribe_audio(wav_b64(audio), names or []))
+        if _is_hallucination(text):
+            text = ""
+        _logger.debug(
+            "Transcribed",
+            extra={"data": {
+                "chars": len(text),
+                "audio_seconds": round(audio.size / 16000, 2),
+                "latency_seconds": round(time.monotonic() - t0, 2),
+                "device": "gemma",
+            }},
+        )
+        return text
+
+    def close(self) -> None:
+        return None
