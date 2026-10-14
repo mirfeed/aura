@@ -227,7 +227,7 @@ def ago(ts: str) -> str:
     if secs < 90:
         return "только что"
     if secs < 3600:
-        return f"{int(secs // 60)} мин назад"
+        return "меньше часа назад"
     if secs < 86400:
         return f"{int(secs // 3600)} ч назад"
     days = int(secs // 86400)
@@ -639,6 +639,7 @@ class SocialMemory:
         text: str,
         max_people: Optional[int] = None,
         max_statements: int = 7,
+        max_facts: Optional[int] = None,
     ) -> SocialContext:
         """Собрать блоки «люди», «твои слова», «сводка» для промпта."""
         ctx = SocialContext()
@@ -677,7 +678,7 @@ class SocialMemory:
             async with self._db.execute(
                 "SELECT fact, said_by, is_gossip, last_confirmed FROM facts WHERE subject_key = ?"
                 " ORDER BY times_seen DESC, last_confirmed DESC LIMIT ?",
-                (key, config.SOCIAL_FACTS_PER_PERSON),
+                (key, max_facts or config.SOCIAL_FACTS_PER_PERSON),
             ) as cur:
                 facts = await cur.fetchall()
 

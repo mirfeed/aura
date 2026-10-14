@@ -597,7 +597,7 @@ class VoiceManager:
         ctx.memory_snippets = (await self._memory.recall(ctx))[: config.VOICE_MEMORY_SNIPPETS]
         ctx.social = await self._memory.social.build_context(
             session.channel_id, (ctx.author_id, display_name, user_id), job.others, ctx.content,
-            max_people=config.VOICE_SOCIAL_PEOPLE, max_statements=3,
+            max_people=config.VOICE_SOCIAL_PEOPLE, max_statements=3, max_facts=config.VOICE_SOCIAL_FACTS,
         )
         ctx.affinity = ctx.social.speaker_affinity
         ctx.relationship_score = await self._memory.get_relationship_score(ctx.author_id)

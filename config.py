@@ -405,6 +405,7 @@ VOICE_WARMUP: bool = _get_bool("VOICE_WARMUP", True)
 VOICE_HISTORY_LINES: int = _get_int("VOICE_HISTORY_LINES", 10)
 VOICE_MEMORY_SNIPPETS: int = _get_int("VOICE_MEMORY_SNIPPETS", 2)
 VOICE_SOCIAL_PEOPLE: int = _get_int("VOICE_SOCIAL_PEOPLE", 3)
+VOICE_SOCIAL_FACTS: int = _get_int("VOICE_SOCIAL_FACTS", 4)  # фактов о каждом человеке в голосовом промпте
 # Отдельная (маленькая и быстрая) модель для войса, например gemma3:4b.  Пусто = та же, что и в чате.
 VOICE_OLLAMA_MODEL: str = _get_str("VOICE_OLLAMA_MODEL", "")
 
