@@ -383,6 +383,66 @@ def _is_silence(text: str) -> Optional[bool]:
     return None if len(t) < 6 else False
 
 
+_HEARD_RE = re.compile(r"\[?\s*СЛЫШАЛА\s*\]?\s*[:：]", re.I)
+_HEARD_MARK = "слышала:"
+
+
+def _marker_prefix_len(s: str) -> int:
+    """Сколько последних символов *s* могут оказаться началом метки «СЛЫШАЛА:» — их пока придержать."""
+    tail = s[-12:]
+    for i in range(len(tail)):
+        cand = re.sub(r"[\s\[\]]", "", tail[i:]).lower()
+        if cand and _HEARD_MARK.startswith(cand) and tail[i] in "[ \nСс":
+            return len(tail) - i
+    return 0
+
+
+class HeardSplitter:
+    """
+    Ответ на голос «с ушами»: модель пишет реплику, а потом строку «СЛЫШАЛА: …» —
+    что сказал человек (для истории и памяти).  Иногда она пишет эту строку первой.
+    feed() отдаёт только текст реплики; услышанное копится в .heard.
+    """
+
+    def __init__(self) -> None:
+        self.pending = ""
+        self.heard = ""
+        self.state = "start"   # start → reply → heard
+
+    def feed(self, text: str, done: bool = False) -> str:
+        if self.state == "heard":
+            self.heard += text
+            return ""
+        self.pending += text
+        m = _HEARD_RE.search(self.pending)
+        if m:
+            before, after = self.pending[: m.start()], self.pending[m.end():]
+            self.pending = ""
+            if self.state == "start" and not before.strip():
+                # «СЛЫШАЛА» первой строкой: услышанное — до конца строки, дальше реплика.
+                nl = after.find("\n")
+                if nl < 0 and not done:
+                    self.pending = before + m.group(0) + after   # ждём конец строки
+                    return ""
+                self.heard = after if nl < 0 else after[:nl]
+                self.state = "reply"
+                return self.feed("" if nl < 0 else after[nl + 1:], done)
+            self.state = "heard"
+            self.heard += after
+            return before
+        keep = 0 if done else _marker_prefix_len(self.pending)
+        out = self.pending[: len(self.pending) - keep]
+        self.pending = self.pending[len(out):]
+        if out.strip():
+            self.state = "reply"
+        return out
+
+    @property
+    def heard_text(self) -> str:
+        line = self.heard.strip().split("\n")[0].strip()
+        return line.strip(" \"'«»<>").strip()
+
+
 def _other_speakers(context: "MessageContext") -> set:
     """Имена других людей из истории/канала (в нижнем регистре) — чтобы понять, что модель пишет за них."""
     names = {n.lower() for n in (getattr(context, "voice_participants", []) or [])}
@@ -637,13 +697,20 @@ class TextPipeline:
         """
         length = choose_length(context)
         system, user = self._build_messages(context, length)
+        user_msg: Dict[str, Any] = {"role": "user", "content": user}
+        # Слух через Gemma: запись фразы — в том же поле, что и картинки (так Ollama принимает звук для gemma4).
+        splitter = HeardSplitter() if getattr(context, "voice_audio", "") else None
+        options = self._options()
+        if splitter is not None:
+            user_msg["images"] = [context.voice_audio]
+            options["temperature"] = 0.2   # на обычной температуре она «слышит» то, чего не было
         payload = {
             "model": _voice_model(),
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "messages": [{"role": "system", "content": system}, user_msg],
             "stream": True,
             "think": False,
             "keep_alive": config.OLLAMA_KEEP_ALIVE,
-            "options": self._options(),
+            "options": options,
         }
         url = f"{config.OLLAMA_BASE_URL}/api/chat"
         tmo = aiohttp.ClientTimeout(total=config.OLLAMA_TIMEOUT)
@@ -669,6 +736,7 @@ class TextPipeline:
         others = _other_speakers(context)
         optional = bool(getattr(context, "voice_optional", False))
         decided = not optional
+        muted = False   # реплика кончилась (молчание, лимит, чужие реплики), но «СЛЫШАЛА: …» ещё дочитываем
 
         async with _Hold(self._llm_lock, PRIORITY_VOICE):
             self._last_request = time.monotonic()
@@ -683,10 +751,18 @@ class TextPipeline:
                             chunk = json.loads(raw_line)
                         except ValueError:
                             continue
-                        buf += (chunk.get("message") or {}).get("content", "") or ""
-                        done = bool(chunk.get("done"))
-                        if done:
+                        text = (chunk.get("message") or {}).get("content", "") or ""
+                        stream_done = bool(chunk.get("done"))
+                        if stream_done:
                             stats = chunk
+                        if splitter is not None:
+                            text = splitter.feed(text, stream_done)
+                        if muted:
+                            if stream_done:
+                                break
+                            continue
+                        buf += text
+                        done = stream_done
 
                         # Необязательная реплика: сначала понять, не решила ли она промолчать.
                         if not decided:
@@ -695,7 +771,10 @@ class TextPipeline:
                                 verdict = False  # короткая реплика вроде «ага» — пусть говорит
                             if verdict is True:
                                 silent = True
-                                break
+                                if splitter is None or stream_done:
+                                    break
+                                muted = True
+                                continue
                             if verdict is None:
                                 continue
                             decided = True
@@ -737,7 +816,9 @@ class TextPipeline:
                                     done = stop = True
                                     break
                         if done:
-                            break
+                            if splitter is None or stream_done:
+                                break
+                            muted = True
                     if not stop and not silent and buf.strip():
                         piece = _clean_piece(buf, not sent_any)
                         if piece:
@@ -746,6 +827,8 @@ class TextPipeline:
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 _logger.warning("Ollama stream failed", extra={"data": {"error": str(exc)}})
             finally:
+                if splitter is not None:
+                    context.voice_heard = splitter.heard_text
                 self._last_request = time.monotonic()
                 _logger.info(
                     "llm_voice_stats",
@@ -757,6 +840,31 @@ class TextPipeline:
                 )
         if not sent_any and not optional:
             yield random.choice(_FALLBACK_LINES)
+
+    async def hear_only(self, context: "MessageContext") -> str:
+        """
+        Только расшифровать фразу (без ответа) — пока она слушала, люди уже сказали что-то ещё.
+        Тот же system-промпт, что у ответа, чтобы не сбивать кэш Ollama.
+        """
+        context.voice_transcribe_only = True
+        system, user = self._build_messages(context, "short")
+        data = await self._post(
+            f"{config.OLLAMA_BASE_URL}/api/chat",
+            {
+                "model": _voice_model(),
+                "messages": [{"role": "system", "content": system},
+                             {"role": "user", "content": user, "images": [context.voice_audio]}],
+                "stream": False,
+                "think": False,
+                "keep_alive": config.OLLAMA_KEEP_ALIVE,
+                "options": {**self._options(), "num_predict": 150, "temperature": 0.2},
+            },
+            priority=PRIORITY_VOICE,
+        )
+        raw = ((data or {}).get("message") or {}).get("content", "") or ""
+        splitter = HeardSplitter()
+        rest = splitter.feed(raw, True)
+        return splitter.heard_text or rest.strip().strip(" \"'«»").strip()  # без метки — весь ответ и есть текст
 
     async def warmup(self, voice: bool = True) -> None:
         """Крошечный запрос с тем же началом промпта — чтобы Ollama держала его в кэше."""
@@ -1960,6 +2068,34 @@ class TextPipeline:
                            "скажи, что скинуть нечего; можно предложить прислать тебе что-нибудь классное, "
                            "ты сохранишь. Ссылки не выдумывай]")
 
+        if context.is_voice and getattr(context, "voice_audio", ""):
+            participants = getattr(context, "voice_participants", []) or [speaker]
+            head = (
+                f"В голосовом канале сейчас: {', '.join(participants)} и ты.\n"
+                f"Разговор в канале (старые сверху):\n{history}\n\n"
+                f"Только что {speaker} что-то сказал(а) — запись приложена: послушай её, ты слышишь и слова, "
+                "и интонацию.\n"
+            )
+            if getattr(context, "voice_transcribe_only", False):
+                user = head + "Сейчас ничего не отвечай — только запиши дословно, что сказано, одной строкой:\nСЛЫШАЛА: <текст>"
+            else:
+                if getattr(context, "voice_optional", False):
+                    decide = (
+                        f"Ответь вслух, если обращаются к тебе (зовут по имени — {config.BOT_NAME}, «Аура»), "
+                        "продолжают разговор с тобой, спрашивают всех или тема тебе правда интересна и есть что "
+                        "коротко сказать. Если люди говорят между собой о своём — не вмешивайся: вместо реплики "
+                        f"напиши ровно {SILENCE_TOKEN}."
+                    )
+                else:
+                    decide = f"Вы в канале вдвоём — ответь {speaker} вслух."
+                user = head + (
+                    "Важно: что именно сказал(а) человек — бери ТОЛЬКО из записи, а не из истории чата; "
+                    "не путай с прошлыми репликами и не додумывай, что звали тебя. "
+                ) + decide + (
+                    f"\n\nФормат: сначала твоя реплика (или {SILENCE_TOKEN}), потом с новой строки "
+                    "«СЛЫШАЛА: <дословный текст записи>». Эту строку не произносят, она для памяти."
+                )
+            return system, user
         if context.is_voice and getattr(context, "voice_optional", False):
             participants = getattr(context, "voice_participants", []) or [speaker]
             user = (

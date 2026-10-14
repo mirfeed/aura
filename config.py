@@ -398,6 +398,9 @@ VOICE_PROACTIVE_THRESHOLD: float = _get_float("VOICE_PROACTIVE_THRESHOLD", 0.45)
 VOICE_PROACTIVE_COOLDOWN_S: int = _get_int("VOICE_PROACTIVE_COOLDOWN_S", 25)
 # Сколько секунд после её реплики разговор считается продолжением разговора с ней.
 VOICE_FOLLOWUP_WINDOW_S: int = _get_int("VOICE_FOLLOWUP_WINDOW_S", 25)
+# Слух: whisper — фразы расшифровывает Whisper, модель отвечает на текст;
+# gemma — модель сама слушает запись, отвечает и потом пишет, что услышала (Whisper не грузится).
+VOICE_HEARING: str = _get_str("VOICE_HEARING", "whisper").lower()
 # Прогрев модели при входе в войс и в простое — быстрый первый ответ.
 VOICE_WARMUP: bool = _get_bool("VOICE_WARMUP", True)
 

@@ -219,6 +219,12 @@ class MessageContext:
     voice_participants: List[str] = field(default_factory=list)
     # Voice: её не звали по имени, она сама решает, вмешаться или промолчать.
     voice_optional: bool = False
+    # Voice, слух через Gemma: запись фразы (WAV в base64) вместо текста Whisper…
+    voice_audio: str = ""
+    # …только расшифровать, без ответа (пока она слушала, люди сказали ещё что-то)…
+    voice_transcribe_only: bool = False
+    # …и что она расслышала (строка «СЛЫШАЛА: …» после её реплики).
+    voice_heard: str = ""
 
     # Social memory block for the prompt (memory.social.SocialContext).
     social: Any = None

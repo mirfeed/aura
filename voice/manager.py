@@ -67,6 +67,21 @@ _FAIL_LINES = ["не могу зайти. права проверь.", "что-�
 _VOICE_LEAVE_RE = re.compile(r"(выйди|выйти|выходи|уйди|покинь|отключись|ливни|ливай)", re.IGNORECASE)
 
 
+def _wav_b64(audio: np.ndarray, sr: int = 16000) -> str:
+    """Фраза (float32, 16 кГц, моно) → WAV в base64: так её слышит Gemma."""
+    import base64
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes((np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes())
+    return base64.b64encode(buf.getvalue()).decode()
+
+
 def _pick(lines: list) -> str:
     import random
 
@@ -121,6 +136,7 @@ class _ReplyJob:
     optional: bool
     interest: float
     others: list
+    audio: Optional[np.ndarray] = None   # слух через Gemma: запись фразы вместо текста Whisper
 
 
 class _Player:
@@ -220,7 +236,8 @@ class VoiceManager:
         self._state = state
         self._pipeline = pipeline
         self._memory = memory
-        self._stt = SpeechToText()
+        # VOICE_HEARING=gemma — фразы слушает сама модель, Whisper не грузится (минус ~1 ГБ видеопамяти).
+        self._stt: Optional[SpeechToText] = None if config.VOICE_HEARING == "gemma" else SpeechToText()
         self._tts = make_tts()
         self._sessions: Dict[int, _GuildSession] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -232,7 +249,8 @@ class VoiceManager:
 
     async def preload(self) -> None:
         """Загрузить Whisper и TTS в фоне, чтобы первый ответ был быстрым."""
-        for name, loader in (("whisper", self._stt.load), (f"{config.TTS_ENGINE}_tts", self._tts.load)):
+        loaders = [("whisper", self._stt.load)] if self._stt is not None else []
+        for name, loader in loaders + [(f"{config.TTS_ENGINE}_tts", self._tts.load)]:
             try:
                 await loader()
             except Exception as exc:  # noqa: BLE001
@@ -259,7 +277,8 @@ class VoiceManager:
     async def close(self) -> None:
         for guild_id in list(self._sessions):
             await self.leave(guild_id)
-        self._stt.close()
+        if self._stt is not None:
+            self._stt.close()
         self._tts.close()
 
     @property
@@ -353,7 +372,7 @@ class VoiceManager:
         )
 
         # Если модели ещё не загружены — грузим в фоне.
-        if not (self._stt.ready and self._tts.ready):
+        if not ((self._stt is None or self._stt.ready) and self._tts.ready):
             asyncio.create_task(self.preload())
         asyncio.create_task(self._rx_watchdog(channel, vc, _retry))
         return True
@@ -476,6 +495,10 @@ class VoiceManager:
     async def _hear(self, session: _GuildSession, user_id: int, audio: np.ndarray) -> None:
         from core.message_handler import MessageContext
 
+        if self._stt is None:
+            await self._hear_gemma(session, user_id, audio)
+            return
+
         guild = session.vc.guild
         display_name = self._resolve_name(session, user_id)
         member = guild.get_member(user_id)
@@ -569,10 +592,108 @@ class VoiceManager:
         else:
             await self._memory.log_event(ctx, bot_replied=False)
 
+    async def _hear_gemma(self, session: _GuildSession, user_id: int, audio: np.ndarray) -> None:
+        """
+        Слух через Gemma: фраза уходит модели записью.  Она сама слушает, решает, отвечать ли,
+        и после реплики пишет «СЛЫШАЛА: …» — это и идёт в историю и память вместо текста Whisper.
+        """
+        from core.message_handler import MessageContext
+
+        guild = session.vc.guild
+        display_name = self._resolve_name(session, user_id)
+        member = guild.get_member(user_id)
+        heard_at = time.monotonic()
+        session.last_utterance = heard_at
+        session.utterance_seq += 1
+        humans = [m for m in getattr(session.vc.channel, "members", []) if not m.bot]
+        for m in humans:
+            session.names[m.id] = m.display_name
+        alone = len(humans) == 1
+        ctx = MessageContext(
+            message_id=int(time.time() * 1000),
+            content="",
+            author_id=anonymise_author_id(user_id),
+            author_display_name=display_name,
+            channel_id=session.channel_id,
+            guild_id=guild.id,
+            timestamp=datetime.now(tz=timezone.utc),
+            recent_channel_history=[],   # возьмётся перед ответом: там будут и фразы, расшифрованные позже
+            raw_author_id=user_id,
+            author_role_ids=[r.id for r in getattr(member, "roles", [])] if member else [],
+            is_voice=True,
+            voice_participants=[display_name] + [m.display_name for m in humans if m.id != user_id],
+            mood_label="",
+            voice_audio=_wav_b64(audio),
+        )
+        session.pending.append(_ReplyJob(
+            ctx=ctx, user_id=user_id, seq=session.utterance_seq, heard_at=heard_at, stt_s=0.0,
+            optional=not (alone and config.VOICE_REPLY_WHEN_ALONE), interest=0.0,
+            others=[(anonymise_author_id(m.id), m.display_name, m.id) for m in humans if m.id != user_id],
+            audio=audio,
+        ))
+        if session.reply_task is None or session.reply_task.done():
+            session.reply_task = asyncio.create_task(self._reply_loop(session))
+
+    async def _note_heard(self, session: _GuildSession, job: "_ReplyJob", text: str, seconds: float) -> bool:
+        """Что она расслышала — в лог, историю и память (как раньше текст Whisper).  True — велели выйти."""
+        ctx = job.ctx
+        ctx.content = text or "(неразборчиво)"
+        addressed = mentions_bot_name(ctx.content)
+        _logger.info(
+            "voice_transcript",
+            extra={"data": {
+                "author_id_hash": ctx.author_id,
+                "author_display_name": ctx.author_display_name,
+                "channel_id": session.channel_id,
+                "chars": len(ctx.content),
+                "text": ctx.content if config.VOICE_LOG_TRANSCRIPTS else None,
+                "stt_seconds": round(seconds, 2),
+                "addressed": addressed,
+                "heard_by": "gemma",
+            }},
+        )
+        if addressed and _VOICE_LEAVE_RE.search(ctx.content):
+            pcm = await self._tts.synthesize(_pick(_LEAVE_LINES))
+            if pcm and session.vc.is_connected():
+                await self._play(session, pcm)
+            await self.leave(session.vc.guild.id)
+            return True
+        session.history.append(f"{ctx.author_display_name}: {ctx.content}")
+        await self._memory.note_incoming(ctx)
+        return False
+
+    async def _transcribe_backlog(self, session: _GuildSession, job: "_ReplyJob") -> None:
+        """Пока она слушала прошлые фразы, сказали ещё: эту — только расшифровать, ответить — если звали по имени."""
+        ctx = job.ctx
+        ctx.recent_channel_history = list(session.history)
+        t0 = time.monotonic()
+        text = await self._pipeline.hear_only(ctx)
+        ctx.voice_transcribe_only = False
+        if await self._note_heard(session, job, text, time.monotonic() - t0):
+            return
+        if text and mentions_bot_name(text):
+            # Звали её — ответить по расшифровке, как раньше по тексту Whisper.
+            ctx.voice_audio = ""
+            job.audio = None
+            job.optional = False
+            ctx.recent_channel_history = list(session.history)[:-1]
+            await self._respond(session, job)
+        else:
+            await self._memory.log_event(ctx, bot_replied=False)
+
     async def _reply_loop(self, session: _GuildSession) -> None:
         """Стадия 2 — ответы по очереди (обращения к ней всегда по порядку)."""
         while session.pending:
             job = session.pending.popleft()
+            if job.audio is not None and session.pending:
+                try:
+                    await self._transcribe_backlog(session, job)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    _logger.error("Voice backlog transcription failed", extra={"data": {"error": str(exc)}},
+                                  exc_info=True)
+                continue
             session.reply_optional = job.optional
             session.reply_speaking = False
             try:
@@ -594,6 +715,11 @@ class VoiceManager:
         t_start = time.monotonic()
 
         ctx.mood_label = mood_label(self._state)
+        hearing = job.audio is not None
+        if hearing:
+            # Текста фразы ещё нет (она в записи) — память ищем по тому, о чём говорили последним.
+            ctx.recent_channel_history = list(session.history)
+            ctx.content = " ".join(h.split(": ", 1)[-1] for h in list(session.history)[-2:])
         ctx.memory_snippets = (await self._memory.recall(ctx))[: config.VOICE_MEMORY_SNIPPETS]
         ctx.social = await self._memory.social.build_context(
             session.channel_id, (ctx.author_id, display_name, user_id), job.others, ctx.content,
@@ -601,8 +727,10 @@ class VoiceManager:
         )
         ctx.affinity = ctx.social.speaker_affinity
         ctx.relationship_score = await self._memory.get_relationship_score(ctx.author_id)
-
-        if job.optional:
+        if hearing:
+            ctx.content = ""
+            ctx.voice_optional = job.optional   # отвечать ли, решает сама, послушав запись
+        elif job.optional:
             # Пока решали — разговор ушёл дальше или кто-то говорит? Тогда не встреваем.
             if session.utterance_seq > job.seq + 1 or self._someone_speaking(session):
                 _logger.info("voice_stayed_silent", extra={"data": {
@@ -667,6 +795,9 @@ class VoiceManager:
             await player.abort()
             raise
         response = " ".join(pieces).strip()
+        if hearing and await self._note_heard(session, job, ctx.voice_heard, llm_s):
+            await player.finish()
+            return
         if not response:
             # Не звали по имени, и модель решила промолчать ([молчу]).
             await player.finish()
