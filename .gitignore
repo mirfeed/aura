@@ -1,0 +1,37 @@
+# секреты
+.env
+.env.*
+!.env.example
+*.env
+!voice.env.example
+voice.env
+
+# её память, переписки, люди — личные данные
+data/
+data2/
+logs/
+people_report.txt
+*.db
+*.db.bak*
+
+# модели, голоса, записи
+models/
+f5/raw/
+f5/incoming/
+f5/voices/
+f5/test/
+fish/*.wav
+fish/emotions/
+fish/mesage.txt
+*.wav
+*.mp3
+*.pt
+*.onnx
+*.safetensors
+
+# бэкапы и мусор
+backup_*/
+__pycache__/
+*.pyc
+.venv/
+venv/
