@@ -599,6 +599,7 @@ class MessageHandler:
 
             # Generate reply text.
             gen_started = time.monotonic()
+            search_seconds = 0.0
             # Нужно загуглить, чтобы ответить по делу?
             # Вспомнила прочитанное — про это не гуглит (и не спойлерит себе книгу).
             if config.WEB_SEARCH_ENABLED and not ctx.is_voice and not ctx.book_memories:
@@ -609,6 +610,8 @@ class MessageHandler:
                         ctx.web_results = await self._pipeline.web_lookup(query)
                 except Exception as exc:  # noqa: BLE001
                     _logger.warning("web search failed", extra={"data": {"error": str(exc)}})
+                search_seconds = time.monotonic() - gen_started
+            self._pipeline.last_stats = {}
             response = await self._pipeline.generate(ctx)
             if not relay_sent and not ctx.outgoing_media and _false_send_claim(response):
                 # Говорит «отправила» / «сейчас отправлю», хотя в этот раз ничего не ушло, —
@@ -633,6 +636,7 @@ class MessageHandler:
 
             # On guild channels — reply to the specific message (shows the
             # reply arrow in Discord).  In DMs — just send normally.
+            send_started = time.monotonic()
             await self._send_with_typing(
                 message.channel, response, decision.typing_duration,
                 reply_to=message if not ctx.is_dm else None,
@@ -653,6 +657,10 @@ class MessageHandler:
                 message_id=ctx.message_id,
                 channel_id=ctx.channel_id,
                 response_length=len(response),
+                search_seconds=round(search_seconds, 1),
+                llm_seconds=round(gen_seconds - search_seconds, 1),
+                typing_seconds=round(time.monotonic() - send_started, 1),
+                **getattr(self._pipeline, "last_stats", {}),
             )
 
         # Always log the event — whether or not we replied.
@@ -1075,7 +1083,8 @@ class MessageHandler:
                     delay = min(config.CHAT_TYPING_MAX, len(chunk) / cps)
                     if i == 0:
                         # Пока модель думала, человек тоже «набирал» — это время не ждём второй раз.
-                        delay = max(typing_duration * 0.5, delay - already_waited, 1.0)
+                        floor = typing_duration * 0.5 if already_waited < typing_duration else 0.0
+                        delay = max(floor, delay - already_waited, 1.0)
                     else:
                         delay = max(delay, 1.2)
                         await asyncio.sleep(random.uniform(0.3, 1.2))  # пауза перед следующим

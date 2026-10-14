@@ -38,6 +38,20 @@ except Exception as _exc:  # noqa: BLE001
 _logger = get_logger("bot.main")
 
 
+STOP_FLAG = config.MODELS_DIR.parent / "stop.flag"
+
+
+async def _watch_stop_flag(bot: "CompanionBot") -> None:
+    """stop.bat кладёт data/stop.flag — выходим аккуратно (с выходом из войса), а не убиваем процесс."""
+    while not bot.is_closed():
+        await asyncio.sleep(2)
+        if STOP_FLAG.exists():
+            STOP_FLAG.unlink(missing_ok=True)
+            _logger.info("Stop flag found — shutting down", extra={"data": {}})
+            await bot.close()
+            return
+
+
 async def main() -> None:
     """
     Construct all dependencies, start the bot, and handle shutdown.
@@ -99,6 +113,8 @@ async def main() -> None:
             else:
                 bot._voice = VoiceManager(client=bot, state=state, pipeline=pipeline, memory=memory)
 
+        STOP_FLAG.unlink(missing_ok=True)  # старый флаг от прошлого раза не должен сразу погасить бота
+        asyncio.create_task(_watch_stop_flag(bot))
         await bot.start(config.DISCORD_TOKEN)
 
     except KeyboardInterrupt:

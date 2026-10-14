@@ -106,12 +106,6 @@ class ReminderStore:
         await self._db.execute("UPDATE reminders SET done = 1 WHERE id = ?", (rid,))
         await self._db.commit()
 
-    async def pending_for(self, user_id: int, limit: int = 5) -> List[Dict[str, Any]]:
-        async with self._db.execute(
-            "SELECT * FROM reminders WHERE done = 0 AND user_id = ? ORDER BY due_at LIMIT ?", (user_id, limit)
-        ) as cur:
-            return [dict(r) for r in await cur.fetchall()]
-
 
 def prefer_evening(due_utc: Optional[datetime], request: str, now_local: datetime) -> Optional[datetime]:
     """«в 6» без «утра» — это 18:00, а не 06:00 (так говорят люди).  «через …» и «6:30» не трогаем."""

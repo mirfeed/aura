@@ -13,7 +13,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, Optional, Tuple
 
 
 class Mood(Enum):
@@ -40,8 +40,6 @@ class BotState:
     energy:
         Float in [0.0, 1.0].  Decays over time; restored when the bot
         chooses to be quiet.
-    focus_channel_id:
-        Channel the bot is currently paying most attention to, or None.
     last_spoke:
         Maps channel_id → UTC datetime of the most recent reply in that
         channel.
@@ -53,7 +51,6 @@ class BotState:
 
     mood: Mood = Mood.NEUTRAL
     energy: float = 0.8
-    focus_channel_id: Optional[int] = None
     last_spoke: Dict[int, datetime] = field(default_factory=dict)
     message_streak: int = 0
     messages_seen_since_last_reply: int = 0
@@ -64,10 +61,6 @@ class BotState:
     # Почему у неё такое настроение (заполняется рефлексией).
     mood_reason: str = ""
     mood_since: Optional[datetime] = None
-
-    # Set of user IDs that currently have an open DM channel with the bot.
-    # Populated lazily in the background loop; used to skip fetch_user calls.
-    known_dm_users: Set[int] = field(default_factory=set)
 
     # С кем она последней разговаривала в канале: channel_id → (author_id, UTC время).
     last_partner: Dict[int, Tuple[str, datetime]] = field(default_factory=dict)

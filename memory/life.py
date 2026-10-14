@@ -20,13 +20,6 @@ if TYPE_CHECKING:
 
 _logger = get_logger("bot.life")
 
-EVENT_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "properties": {"event": {"type": "string"}},
-    "required": ["event"],
-}
-
-
 def _ago(ts: str) -> str:
     try:
         dt = datetime.fromisoformat(ts)

@@ -178,7 +178,7 @@ class TTSRequest(BaseModel):
     speed: float = 1.0
     format: str = "wav"
 
-    model_config = {"extra": "ignore"}   # поля Fish-клиента (temperature и т. п.) просто игнорируются
+    model_config = {"extra": "ignore"}   # лишние поля в запросе просто игнорируются
 
 
 app = FastAPI(title="Aura F5-TTS")

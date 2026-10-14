@@ -198,8 +198,9 @@ def log_reply_sent(
     message_id: int,
     channel_id: int,
     response_length: int,
+    **timing: object,
 ) -> None:
-    """Log that a reply was successfully sent to Discord."""
+    """Log that a reply was successfully sent to Discord (+ на что ушло время, если передано)."""
     _log(
         logging.INFO,
         "reply_sent",
@@ -207,5 +208,6 @@ def log_reply_sent(
             "message_id": message_id,
             "channel_id": channel_id,
             "response_length": response_length,
+            **timing,
         },
     )

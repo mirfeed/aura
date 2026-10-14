@@ -8,12 +8,9 @@ the result to [0.0, 1.0] and adding a small random noise term.
 from __future__ import annotations
 
 import random
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
-
-import config
 
 
 # ---------------------------------------------------------------------------

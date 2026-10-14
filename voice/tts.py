@@ -1,10 +1,9 @@
 """
-voice/tts.py — Day 5: озвучка ответов через Silero TTS (или Fish Speech).
+voice/tts.py — Day 5: озвучка ответов через Silero TTS (или F5-TTS).
 
-* ``TTS_ENGINE=fish``: ответы озвучивает локальный сервер Fish Speech
-  с маркерами эмоций, а если он не отвечает — Silero (см. ``FallbackTTS``).
 * ``TTS_ENGINE=f5``: сервер F5-TTS (русская модель ESpeech).  Текст готовится
   как для Silero (кириллица, «+» ударения), эмоция — образец голоса под настроение.
+  Если сервер не отвечает — фразу озвучивает Silero (см. ``FallbackTTS``).
 
 * Модель скачивается один раз в ``data/models/silero_<TTS_MODEL>.pt``
   (standalone-вариант через torch.package — без torch.hub и git).
@@ -190,24 +189,6 @@ def normalize_for_speech(text: str, keep_ellipsis: bool = False) -> str:
     return text
 
 
-def normalize_for_fish(text: str) -> str:
-    """
-    Текст для Fish Speech.  Латиницу Fish читает сам, поэтому транслитерации нет;
-    числа и русские аббревиатуры раскрываем, а «+» ударения из словаря убираем —
-    Fish их не понимает (написание из словаря при этом остаётся).
-    """
-    text = _clean_common(text)
-    text = _RU_ABBR_RE.sub(_ru_caps, text)
-    text = _NUMBER_RE.sub(_number_to_words, text)
-    text = text.replace("+", "").replace("…", "...")
-    text = re.sub(r"[()]", " ", text)   # скобки зарезервированы под маркеры эмоций
-    text = re.sub(r"[^\w\s.,!?:;'\-—]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    text = re.sub(r"\s+([.,!?:;])", r"\1", text)
-    text = re.sub(r"^[\s.,!?:;\-—]+", "", text)
-    return text
-
-
 # --- эмоции: настроение + тип фразы → темп и высота голоса (SSML Silero) ---
 _RATES = ["x-slow", "slow", "medium", "fast", "x-fast"]
 _PITCHES = ["x-low", "low", "medium", "high", "x-high"]
@@ -254,46 +235,6 @@ def build_ssml(text: str, mood: str) -> Tuple[str, str]:
             parts.append(f'<s><prosody rate="{rate}" pitch="{pitch}">{safe}</prosody></s>')
         plain.append(clean)
     return "<speak><p>" + "".join(parts) + "</p></speak>", " ".join(plain)
-
-
-# --- эмоции для Fish Speech: маркеры в скобках перед предложением ---
-_FISH_MOOD_MARKERS = {
-    "cheerful": "(joyful)",
-    "amused": "(amused)",
-    "curious": "(curious)",
-    "irritated": "(frustrated)",
-    "tired": "(soft tone)",
-    "withdrawn": "(soft tone)",
-    "neutral": "",
-}
-
-
-def _fish_marker_for(sentence: str, mood: str) -> str:
-    s = sentence.strip()
-    if s.endswith("!"):
-        # Восклицание: раздражённая — сердито, в остальных случаях — живо.
-        return "(angry)" if mood == "irritated" else "(excited)"
-    if s.endswith("...") or s.endswith("…"):
-        return "(soft tone)"
-    return _FISH_MOOD_MARKERS.get(mood or "neutral", "")
-
-
-def build_fish_text(text: str, mood: str) -> Tuple[str, str]:
-    """(текст с маркерами, чистый текст): у каждого предложения — свой маркер эмоции."""
-    sentences = [x for x in re.split(r"(?<=[.!?…])\s+", text.strip()) if x.strip()]
-    tagged: List[str] = []
-    plain: List[str] = []
-    prev = ""
-    for sent in sentences:
-        clean = normalize_for_fish(sent)
-        if not re.search(r"[^\W\d_]", clean):
-            continue
-        marker = _fish_marker_for(sent, mood) if config.TTS_EMOTIONAL else ""
-        # Повторять тот же маркер подряд незачем: он действует и дальше.
-        tagged.append(f"{marker} {clean}" if marker and marker != prev else clean)
-        prev = marker or prev
-        plain.append(clean)
-    return " ".join(tagged), " ".join(plain)
 
 
 def _split_chunks(text: str) -> List[str]:
@@ -454,11 +395,11 @@ class TextToSpeech:
 
 
 # ---------------------------------------------------------------------------
-# Fish Speech (HTTP-сервер fish-speech, tools/api_server.py)
+# F5-TTS (HTTP-сервер f5/f5_server.py)
 # ---------------------------------------------------------------------------
 
 def _wav_to_pcm48(data: bytes) -> np.ndarray:
-    """WAV от Fish (обычно 44.1 кГц, моно, int16) → моно float32 48 кГц."""
+    """WAV от сервера (любая частота, моно/стерео, int16) → моно float32 48 кГц."""
     with wave.open(io.BytesIO(data), "rb") as wf:
         rate = wf.getframerate()
         channels = wf.getnchannels()
@@ -486,18 +427,18 @@ def _mono_to_discord(mono: np.ndarray) -> bytes:
     return np.repeat(pcm16[:, None], 2, axis=1).tobytes()
 
 
-class FishTTS:
-    """Клиент к локальному серверу Fish Speech: POST /v1/tts → WAV → PCM 48 кГц стерео."""
+class F5TTS:
+    """
+    Клиент к серверу F5-TTS (f5/f5_server.py): POST /v1/tts → WAV → PCM 48 кГц стерео.
+    Модель ESpeech читает только кириллицу и понимает «+» ударения — поэтому текст готовится
+    как для Silero (словарь произношений работает).  Эмоция — образец голоса под настроение (mood).
+    """
 
-    name = "Fish"
+    name = "F5"
 
     def __init__(self) -> None:
         self._session: Any = None
         self._ready = False
-
-    @property
-    def _url(self) -> str:
-        return config.FISH_API_URL
 
     @property
     def ready(self) -> bool:
@@ -513,65 +454,52 @@ class FishTTS:
     async def load(self) -> None:
         """Проверка сервера одной короткой фразой (заодно прогрев)."""
         t0 = time.monotonic()
-        await self._request("Привет.", timeout=max(60.0, config.FISH_TIMEOUT))
+        await self._request("Привет.", timeout=max(60.0, config.F5_TIMEOUT))
         self._ready = True
         _logger.info(
-            f"{self.name} TTS ready",
+            "F5 TTS ready",
             extra={"data": {
-                "url": self._url,
-                "reference_id": config.FISH_REFERENCE_ID,
+                "url": config.F5_API_URL,
+                "reference_id": config.F5_REFERENCE_ID,
                 "seconds": round(time.monotonic() - t0, 1),
             }},
         )
 
-    def _payload(self, text: str, mood: str) -> dict:
+    @staticmethod
+    def _payload(text: str, mood: str) -> dict:
         return {
             "text": text,
-            "format": "wav",
-            "streaming": False,
-            "normalize": True,
-            "chunk_length": 200,
-            "max_new_tokens": 1024,
-            "temperature": config.FISH_TEMPERATURE,
-            "top_p": config.FISH_TOP_P,
-            "repetition_penalty": config.FISH_REPETITION_PENALTY,
-            "references": [],
-            "reference_id": config.FISH_REFERENCE_ID or None,
-            "use_memory_cache": "on",
+            "reference_id": config.F5_REFERENCE_ID,
+            "mood": (mood or "neutral") if config.TTS_EMOTIONAL else "neutral",
+            "speed": config.F5_SPEED,
         }
 
     async def _request(self, text: str, timeout: Optional[float] = None, mood: str = "neutral") -> bytes:
         import aiohttp
 
-        payload = self._payload(text, mood)
-        headers = {}
-        if config.FISH_API_KEY:
-            headers["Authorization"] = f"Bearer {config.FISH_API_KEY}"
         session = await self._http()
-        tmo = aiohttp.ClientTimeout(total=timeout or config.FISH_TIMEOUT)
-        async with session.post(
-            f"{self._url}/v1/tts", json=payload, headers=headers, timeout=tmo
-        ) as resp:
+        tmo = aiohttp.ClientTimeout(total=timeout or config.F5_TIMEOUT)
+        async with session.post(f"{config.F5_API_URL}/v1/tts", json=self._payload(text, mood), timeout=tmo) as resp:
             body = await resp.read()
             if resp.status != 200:
-                raise RuntimeError(f"{self.name} HTTP {resp.status}: {body[:200]!r}")
+                raise RuntimeError(f"F5 HTTP {resp.status}: {body[:200]!r}")
             return body
 
     async def synthesize(self, text: str, mood: str = "neutral") -> bytes:
         """Текст → PCM 48 кГц стерео int16.  b'' если нечего читать; при сбое — исключение."""
-        tagged, clean = self._prepare(text, mood)
+        clean = self._prepare(text)
         if not clean:
             return b""
         t0 = time.monotonic()
-        wav = await self._request(tagged, mood=mood)
+        wav = await self._request(clean, mood=mood)
         mono = _wav_to_pcm48(wav)
         if not mono.size:
             return b""
         mono = np.concatenate([mono, np.zeros(int(_SAMPLE_RATE * 0.15), dtype=np.float32)])
         _logger.debug(
-            f"Synthesized ({self.name})",
+            "Synthesized (F5)",
             extra={"data": {
-                "text": tagged[:120],
+                "text": clean[:120],
                 "audio_seconds": round(mono.size / _SAMPLE_RATE, 2),
                 "latency_seconds": round(time.monotonic() - t0, 2),
             }},
@@ -579,8 +507,14 @@ class FishTTS:
         return _mono_to_discord(mono)
 
     @staticmethod
-    def _prepare(text: str, mood: str) -> Tuple[str, str]:
-        return build_fish_text(text, mood)
+    def _prepare(text: str) -> str:
+        clean = normalize_for_speech(text, keep_ellipsis=True)
+        # Многоточие посреди фразы F5 читает рваной паузой: внутри — запятая, в конце — точка.
+        clean = re.sub(r"\s*\.\.\.\s*(?=[А-Яа-яЁё0-9+])", ", ", clean)
+        clean = re.sub(r"\.\.\.(?=\s*[!?])", "", clean)
+        clean = clean.replace("...", ".")
+        clean = re.sub(r",\s*,", ",", clean)
+        return clean if re.search(r"[А-Яа-яЁё]", clean) else ""
 
     @staticmethod
     def to_audio_source(pcm: bytes) -> Any:
@@ -594,72 +528,38 @@ class FishTTS:
                 pass
 
 
-class F5TTS(FishTTS):
-    """
-    Клиент к серверу F5-TTS (D:\\ai\\f5\\f5_server.py).  Модель ESpeech читает только
-    кириллицу и понимает «+» ударения — поэтому текст готовится как для Silero
-    (словарь произношений работает).  Эмоция — образец голоса под настроение (mood).
-    """
-
-    name = "F5"
-
-    @property
-    def _url(self) -> str:
-        return config.F5_API_URL
-
-    def _payload(self, text: str, mood: str) -> dict:
-        return {
-            "text": text,
-            "reference_id": config.FISH_REFERENCE_ID or "aura",
-            "mood": (mood or "neutral") if config.TTS_EMOTIONAL else "neutral",
-            "speed": config.F5_SPEED,
-        }
-
-    @staticmethod
-    def _prepare(text: str, mood: str) -> Tuple[str, str]:
-        clean = normalize_for_speech(text, keep_ellipsis=True)
-        # Многоточие посреди фразы F5 читает рваной паузой: внутри — запятая, в конце — точка.
-        clean = re.sub(r"\s*\.\.\.\s*(?=[А-Яа-яЁё0-9+])", ", ", clean)
-        clean = re.sub(r"\.\.\.(?=\s*[!?])", "", clean)
-        clean = clean.replace("...", ".")
-        clean = re.sub(r",\s*,", ",", clean)
-        if not re.search(r"[А-Яа-яЁё]", clean):
-            return "", ""
-        return clean, clean
-
-
 class FallbackTTS:
-    """Fish Speech / F5-TTS, а если сервер не отвечает — та же фраза через Silero."""
+    """F5-TTS, а если сервер не отвечает — та же фраза через Silero."""
 
-    def __init__(self, primary: Optional[FishTTS] = None) -> None:
-        self._fish = primary or FishTTS()
+    def __init__(self, primary: Optional[F5TTS] = None) -> None:
+        self._primary = primary or F5TTS()
         self._silero = TextToSpeech()
-        self._fish_down_until = 0.0
+        self._primary_down_until = 0.0
 
     @property
     def ready(self) -> bool:
-        return self._fish.ready or self._silero.ready
+        return self._primary.ready or self._silero.ready
 
     async def load(self) -> None:
-        # Silero грузим всегда: без него нечем говорить, пока Fish недоступен.
+        # Silero грузим всегда: без него нечем говорить, пока F5 недоступен.
         await self._silero.load()
         try:
-            await self._fish.load()
+            await self._primary.load()
         except Exception as exc:  # noqa: BLE001
             self._mark_down(exc)
 
     def _mark_down(self, exc: Exception) -> None:
-        self._fish_down_until = time.monotonic() + config.FISH_RETRY_AFTER_S
+        self._primary_down_until = time.monotonic() + config.F5_RETRY_AFTER_S
         _logger.warning(
-            "fish_tts_failed — Silero speaks instead",
-            extra={"data": {"engine": self._fish.name, "error": str(exc) or type(exc).__name__,
-                            "retry_in_s": config.FISH_RETRY_AFTER_S}},
+            "f5_tts_failed — Silero speaks instead",
+            extra={"data": {"engine": self._primary.name, "error": str(exc) or type(exc).__name__,
+                            "retry_in_s": config.F5_RETRY_AFTER_S}},
         )
 
     async def synthesize(self, text: str, mood: str = "neutral") -> bytes:
-        if time.monotonic() >= self._fish_down_until:
+        if time.monotonic() >= self._primary_down_until:
             try:
-                return await self._fish.synthesize(text, mood)
+                return await self._primary.synthesize(text, mood)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -671,14 +571,12 @@ class FallbackTTS:
         return TextToSpeech.to_audio_source(pcm)
 
     def close(self) -> None:
-        self._fish.close()
+        self._primary.close()
         self._silero.close()
 
 
 def make_tts() -> Any:
-    """Движок озвучки по TTS_ENGINE: silero (по умолчанию), fish или f5 (оба с запасным Silero)."""
-    if config.TTS_ENGINE == "fish":
-        return FallbackTTS()
+    """Движок озвучки по TTS_ENGINE: silero (по умолчанию) или f5 (с запасным Silero)."""
     if config.TTS_ENGINE == "f5":
         return FallbackTTS(F5TTS())
     return TextToSpeech()

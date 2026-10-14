@@ -108,13 +108,6 @@ BASE_RESPONSE_PROBABILITY: float = _get_float("BASE_RESPONSE_PROBABILITY", 0.3)
 FOLLOWUP_WINDOW_S: int = _get_int("FOLLOWUP_WINDOW_S", 180)
 
 # ---------------------------------------------------------------------------
-# Typing simulation
-# ---------------------------------------------------------------------------
-
-TYPING_SPEED_MIN: float = _get_float("TYPING_SPEED_MIN", 1.0)
-TYPING_SPEED_MAX: float = _get_float("TYPING_SPEED_MAX", 4.0)
-
-# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 
@@ -148,7 +141,6 @@ MEMORY_TOP_K: int = _get_int("MEMORY_TOP_K", 4)
 MEMORY_MAX_DISTANCE: float = _get_float("MEMORY_MAX_DISTANCE", 0.55)
 # Не вспоминать то, что было последние N минут — это и так видно в истории чата.
 MEMORY_SKIP_RECENT_MINUTES: int = _get_int("MEMORY_SKIP_RECENT_MINUTES", 30)
-MEMORY_RECENCY_HOURS: int = _get_int("MEMORY_RECENCY_HOURS", 72)
 RELATIONSHIP_DECAY_DAYS: int = _get_int("RELATIONSHIP_DECAY_DAYS", 14)
 
 # ---------------------------------------------------------------------------
@@ -181,12 +173,6 @@ SPECIAL_USER_NOTES: dict = _get_special_user_notes()
 
 # ---------------------------------------------------------------------------
 # Role-based relationship — hidden gratitude / warmth
-# ---------------------------------------------------------------------------
-# Comma-separated role IDs (integers) that get "gratitude" treatment.
-# These are roles of people who helped the server — moderators, helpers, etc.
-# Example:  GRATITUDE_ROLE_IDS=123456789012345678,987654321098765432
-GRATITUDE_ROLE_IDS: List[int] = _get_id_list("GRATITUDE_ROLE_IDS")
-
 # ---------------------------------------------------------------------------
 # Proactive DM / personal conversations
 # ---------------------------------------------------------------------------
@@ -323,23 +309,16 @@ TTS_DEVICE: str = _get_str("TTS_DEVICE", "auto")
 TTS_CPU_THREADS: int = _get_int("TTS_CPU_THREADS", 4)
 TTS_VOLUME: float = _get_float("TTS_VOLUME", 1.0)
 
-# --- Озвучка через Fish Speech (отдельный сервер, Silero остаётся запасным) ---
-# silero — как раньше;  fish — Fish Speech, а при его сбое фраза идёт через Silero.
+# --- Озвучка: silero (по умолчанию) или f5 — F5-TTS (русская модель ESpeech, сервер f5/f5_server.py),
+# при сбое F5 фраза идёт через Silero. ---
 TTS_ENGINE: str = _get_str("TTS_ENGINE", "silero").lower()
-FISH_API_URL: str = _get_str("FISH_API_URL", "http://127.0.0.1:8080").rstrip("/")
-FISH_API_KEY: str = _get_str("FISH_API_KEY", "")            # если сервер запущен с --api-key
-FISH_REFERENCE_ID: str = _get_str("FISH_REFERENCE_ID", "aura")  # папка references/<id> на сервере
-FISH_TIMEOUT: float = _get_float("FISH_TIMEOUT", 20.0)      # секунд на одну фразу
-FISH_TEMPERATURE: float = _get_float("FISH_TEMPERATURE", 0.7)
-FISH_TOP_P: float = _get_float("FISH_TOP_P", 0.7)
-FISH_REPETITION_PENALTY: float = _get_float("FISH_REPETITION_PENALTY", 1.2)
-# После сбоя Fish/F5 столько секунд сразу говорим через Silero, не дожидаясь таймаутов.
-FISH_RETRY_AFTER_S: int = _get_int("FISH_RETRY_AFTER_S", 30)
-
-# --- Озвучка через F5-TTS (русская модель ESpeech, сервер D:\ai\f5\f5_server.py) ---
-# TTS_ENGINE=f5.  Голос — папка voices/<FISH_REFERENCE_ID>, эмоция — образец под настроение.
 F5_API_URL: str = _get_str("F5_API_URL", "http://127.0.0.1:8081").rstrip("/")
+# Голос — папка voices/<id> на сервере F5 (FISH_REFERENCE_ID — старое имя, тоже понимается).
+F5_REFERENCE_ID: str = _get_str("F5_REFERENCE_ID", "") or _get_str("FISH_REFERENCE_ID", "aura")
+F5_TIMEOUT: float = _get_float("F5_TIMEOUT", 20.0)          # секунд на одну фразу
 F5_SPEED: float = _get_float("F5_SPEED", 1.0)
+# После сбоя F5 столько секунд сразу говорим через Silero, не дожидаясь таймаутов.
+F5_RETRY_AFTER_S: int = _get_int("F5_RETRY_AFTER_S", 30)
 
 
 # ---------------------------------------------------------------------------
@@ -406,8 +385,6 @@ REACTION_PROBABILITY: float = _get_float("REACTION_PROBABILITY", 0.12)
 # Часовой пояс — она знает, который час (ночью сонная, утром ворчит).
 BOT_TIMEZONE: str = _get_str("BOT_TIMEZONE", "Europe/Moscow")
 
-# Голос: ответ потоком (начинает говорить после первого предложения).
-VOICE_STREAMING: bool = _get_bool("VOICE_STREAMING", True)
 # Короткое «хм» / «ну...» сразу, пока она думает над ответом.
 VOICE_FILLERS: bool = _get_bool("VOICE_FILLERS", False)
 VOICE_FILLER_PROBABILITY: float = _get_float("VOICE_FILLER_PROBABILITY", 0.25)

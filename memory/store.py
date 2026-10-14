@@ -31,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 import aiosqlite

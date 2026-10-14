@@ -138,11 +138,6 @@ class ImageMemory:
                 "files": json.loads(r[4] or "[]"), "is_gif": bool(r[5]),
                 "here": r[6] == channel_id, "is_dm": bool(r[7]), "favorite": bool(r[8])}
 
-    def is_favorite(self, img_id: int) -> bool:
-        with self._lock:
-            row = self._db.execute("SELECT favorite FROM images WHERE id = ?", (img_id,)).fetchone()
-        return bool(row and row[0])
-
     def mark_favorite(self, img_id: int, score: int, frames_b64: Optional[List[str]] = None) -> Optional[Path]:
         """
         Сохранить картинку в любимые: копия в папку любимых (кадры в нормальном качестве,

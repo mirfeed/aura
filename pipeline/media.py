@@ -51,11 +51,11 @@ class MediaPicker:
             _logger.warning("Favorites list failed", extra={"data": {"error": str(exc)}})
             return []
 
-    def prompt_block(self, lib: List[Dict[str, Any]]) -> str:
-        """Пронумерованный список коллекции для промпта."""
+    def prompt_block(self, items: List[Tuple[int, Dict[str, Any]]]) -> str:
+        """Список коллекции для промпта; номера — как в library() (часть пунктов может быть скрыта)."""
         return ("Твоя коллекция любимых картинок (кинуть — метка [картинка: номер]):\n"
                 + "\n".join(f"{i}. {'гифка' if it['is_gif'] else 'картинка'}: {it['caption'][:90] or 'без подписи'}"
-                            for i, it in enumerate(lib, 1)))
+                            for i, it in items))
 
     @staticmethod
     def asked(text: str) -> bool:

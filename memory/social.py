@@ -346,7 +346,6 @@ class SocialContext:
     statements_block: str = ""
     summary: str = ""
     speaker_affinity: float = 0.0
-    speaker_is_owner: bool = False
     focus_names: List[str] = field(default_factory=list)
 
 
@@ -674,7 +673,6 @@ class SocialMemory:
             aff = float(person["affinity"])
             if key == speaker[0]:
                 ctx.speaker_affinity = aff
-                ctx.speaker_is_owner = owner
 
             async with self._db.execute(
                 "SELECT fact, said_by, is_gossip, last_confirmed FROM facts WHERE subject_key = ?"

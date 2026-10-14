@@ -1,7 +1,7 @@
 """
 settings_ui.py — локальная страница настроек Ауры.
 
-Запуск:  python tools/settings_ui.py   (или run_settings.bat)
+Запуск:  python tools/settings_ui.py   (или aura.bat → 6)
 Открыть: http://127.0.0.1:8765
 
 Список настроек, их разделы, подсказки и значения по умолчанию берутся
@@ -32,7 +32,7 @@ PERSONA_FILE = ROOT / "persona.md"
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
 
-SECRET_KEYS = {"DISCORD_TOKEN", "FISH_API_KEY"}
+SECRET_KEYS = {"DISCORD_TOKEN"}
 _KEY_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
 _GET_RE = re.compile(
     r'(?:_get_(str|int|float|bool|id_list|str_list)|os\.getenv)\(\s*"([A-Z0-9_]+)"'
@@ -49,7 +49,7 @@ GROUPS = [
     ("Память", ("MEMORY_", "CHROMA_", "SQLITE_", "EMBEDDING_", "REFLECT_")),
     ("Голос: поведение", ("VOICE_", "MODELS_DIR")),
     ("Распознавание речи (Whisper)", ("VAD_", "WHISPER_")),
-    ("Озвучка (Silero / Fish Speech)", ("TTS_", "FISH_", "PRONUNCIATIONS_")),
+    ("Озвучка (Silero / F5)", ("TTS_", "F5_", "PRONUNCIATIONS_")),
     ("Логи", ("LOG_",)),
 ]
 

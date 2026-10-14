@@ -33,6 +33,8 @@ from pipeline.websearch import EXPLICIT_RE as _SEARCH_EXPLICIT_RE, WebSearch
 from behavior import schedule
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from core.message_handler import MessageContext
     from memory.life import LifeStore
 
@@ -535,6 +537,7 @@ class TextPipeline:
         self._session = session
         self._llm_lock = _PriorityLock()
         self._last_http_error = ""
+        self.last_stats: Dict[str, Any] = {}
         self._no_think_models: set = set()  # модели, которые отказались «размышлять» (think)
         self._last_request = 0.0
         # channel_id → (время, картинки, автор): чтобы на «а что на ней?» она всё ещё видела картинку
@@ -1679,6 +1682,7 @@ class TextPipeline:
                 _logger.warning("Model has no thinking mode — retrying without it", extra={"data": {"model": model}})
                 return await self._complete(system, user, False, priority, images, meta, num_predict)
             if data:
+                self.last_stats = _ollama_stats(data)  # для лога reply_sent: сколько считала модель
                 raw = ((data.get("message") or {}).get("content") or "").strip()
                 if meta is not None:
                     meta["cut"] = data.get("done_reason") == "length"
@@ -1839,11 +1843,12 @@ class TextPipeline:
             life = self.life.prompt_block()
             if life:
                 dynamic.append(life)
+        # Разговор о книгах?  Иначе подробности книги и иллюстрации из неё в промпт не идут —
+        # 12B-модель тащит их в любой ответ.
+        talk = "\n".join([context.content or ""] + list(context.recent_channel_history[-4:]))
+        about_books = bool(getattr(context, "book_memories", None) or _BOOK_TALK_RE.search(talk)
+                           or (self.library is not None and self.library.mentions_my_book(talk)))
         if self.library is not None:
-            # Подробности книги — только когда разговор о книгах; иначе 12B-модель тащит её в любой ответ.
-            talk = "\n".join([context.content or ""] + list(context.recent_channel_history[-4:]))
-            about_books = (bool(getattr(context, "book_memories", None)) or _BOOK_TALK_RE.search(talk)
-                           or self.library.mentions_my_book(talk))
             reading = self.library.prompt_block() if about_books else self.library.prompt_brief()
             if reading:
                 dynamic.append(reading)
@@ -1872,12 +1877,14 @@ class TextPipeline:
         if social is not None and social.summary:
             dynamic.append(f"О чём недавно говорили здесь (сводка): {social.summary}")
         if self._media is not None and not context.is_voice:
-            lib = self._media.library()
-            if lib:
+            items = [(i, it) for i, it in enumerate(self._media.library(), 1)
+                     if about_books or MediaPicker.asked(context.content)
+                     or not it["caption"].lower().startswith("иллюстрация из")]
+            if items:
                 recent = set(self._media.recently_sent(context.channel_id))
-                again = [str(i) for i, it in enumerate(lib, 1) if it["path"] in recent]
+                again = [str(i) for i, it in items if it["path"] in recent]
                 dynamic.append(
-                    self._media.prompt_block(lib)
+                    self._media.prompt_block(items)
                     + (f"\n(Уже кидала здесь недавно: {', '.join(again)})" if again else "")
                     + "\nМожешь кинуть одну из них в чат, как живой человек: отдельной строкой метка "
                     "[картинка: номер]. Редко и к месту — реакция на смешное, к теме разговора, или когда "
