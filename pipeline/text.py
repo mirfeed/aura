@@ -59,12 +59,25 @@ _NARRATION = re.compile(r"^[^.!?:]{0,80}(?:подумала|ответила|с�
                         re.IGNORECASE)
 
 
+# Корейский / китайский / японский посреди русской фразы («Чего 이번 раз?») — сбой модели.
+_FOREIGN_SCRIPT_RE = re.compile(r"[\u1100-\u11ff\u3040-\u30ff\u3130-\u318f\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]+")
+
+
+def strip_foreign_script(text: str, keep_if: str = "") -> str:
+    """Вырезать случайные иероглифы/хангыль.  Если собеседник сам так пишет (*keep_if*) — не трогать."""
+    if not _FOREIGN_SCRIPT_RE.search(text) or _FOREIGN_SCRIPT_RE.search(keep_if or ""):
+        return text
+    text = _FOREIGN_SCRIPT_RE.sub("", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return re.sub(r" +([,.!?…])", r"\1", text).strip()
+
+
 def strip_voice_tics(text: str) -> str:
     """Убрать «хм/ну» в начале, ремарки и рассказ о себе в третьем лице (для озвучки).
 
     При VOICE_NATURAL_SPEECH «ну», «хм», «ой» остаются — это живая речь, а не заминка.
     """
-    t = _NARRATION.sub("", text)
+    t = _NARRATION.sub("", strip_foreign_script(text))
     t = _STAGE_DIRECTIONS.sub(" ", t)
     if not config.VOICE_NATURAL_SPEECH:
         # Пустая строка, если реплика состояла только из «хм…».
@@ -276,7 +289,6 @@ def choose_length(context: "MessageContext") -> str:
 
 # Приоритеты очереди к модели: голос важнее чата, чат важнее «рефлексии».
 PRIORITY_VOICE = 0
-PRIORITY_VOICE_CHECK = 1
 PRIORITY_CHAT = 2
 PRIORITY_BACKGROUND = 3
 
@@ -745,42 +757,6 @@ class TextPipeline:
                 )
         if not sent_any and not optional:
             yield random.choice(_FALLBACK_LINES)
-
-    async def should_speak(self, context: "MessageContext") -> bool:
-        """
-        Быстрое «встревать или нет» для фраз без её имени.  Тот же system-промпт,
-        что и у ответа (Ollama переиспользует его из кэша), и 2 токена ответа.
-        """
-        system = self._build_system(context, "short")
-        speaker = context.author_display_name
-        history = "\n".join(context.recent_channel_history[-config.VOICE_HISTORY_LINES:]) or "(пусто)"
-        user = (
-            f"Разговор в голосовом канале (старые сверху):\n{history}\n{speaker}: {context.content}\n\n"
-            f"Тебя не звали по имени. Стоит ли тебе ({config.BOT_NAME}) сейчас заговорить? "
-            "ДА — если продолжают разговор с тобой, спрашивают тебя или всех, говорят о тебе, "
-            "или тема тебе правда интересна и есть что коротко вставить. "
-            "НЕТ — если люди говорят между собой о своём. Ответь одним словом: ДА или НЕТ."
-        )
-        t0 = time.monotonic()
-        data = await self._post(
-            f"{config.OLLAMA_BASE_URL}/api/chat",
-            {
-                "model": _voice_model(),
-                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                "stream": False,
-                "think": False,
-                "keep_alive": config.OLLAMA_KEEP_ALIVE,
-                "options": {**self._options(), "num_predict": 3, "temperature": 0.2},
-            },
-            priority=PRIORITY_VOICE_CHECK,
-        )
-        answer = ((data or {}).get("message") or {}).get("content", "").strip().lower()
-        _logger.info(
-            "llm_turn_check",
-            extra={"data": {"answer": answer[:10], "seconds": round(time.monotonic() - t0, 2),
-                            **_ollama_stats(data or {})}},
-        )
-        return answer.startswith("да") or answer.startswith("yes")
 
     async def warmup(self, voice: bool = True) -> None:
         """Крошечный запрос с тем же началом промпта — чтобы Ollama держала его в кэше."""
@@ -2019,6 +1995,7 @@ class TextPipeline:
         """Clean and trim the raw model output before sending to Discord."""
         # Метки [картинка: …] сюда доходят только там, где картинки не отправляются, — просто убрать.
         text = MediaPicker.extract(raw)[0] if "[" in raw or "(" in raw else raw.strip()
+        text = strip_foreign_script(text, keep_if=context.content)
 
         # Strip echo of the bot's name / signatures the model may prepend.
         text = re.sub(

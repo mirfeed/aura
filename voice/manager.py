@@ -603,21 +603,15 @@ class VoiceManager:
         ctx.relationship_score = await self._memory.get_relationship_score(ctx.author_id)
 
         if job.optional:
-            # Пока решали — разговор ушёл дальше? Тогда не встреваем в старое.
-            if session.utterance_seq > job.seq + 1:
+            # Пока решали — разговор ушёл дальше или кто-то говорит? Тогда не встреваем.
+            if session.utterance_seq > job.seq + 1 or self._someone_speaking(session):
+                _logger.info("voice_stayed_silent", extra={"data": {
+                    "interest": round(job.interest, 2), "reason": "conversation moved on"}})
                 await self._memory.log_event(ctx, bot_replied=False)
                 return
-            t_check = time.monotonic()
-            speak = await self._pipeline.should_speak(ctx)
-            check_s = time.monotonic() - t_check
-            if not speak or session.utterance_seq > job.seq + 1 or self._someone_speaking(session):
-                _logger.info(
-                    "voice_stayed_silent",
-                    extra={"data": {"interest": round(job.interest, 2), "check_seconds": round(check_s, 2),
-                                    "model_said": speak}},
-                )
-                await self._memory.log_event(ctx, bot_replied=False)
-                return
+            # Встревать или нет, модель решает в том же запросе, что и сам ответ ([молчу]),
+            # а не отдельным вопросом «ДА/НЕТ» — это экономило бы лишние ~5 с на каждую реплику.
+            ctx.voice_optional = True
 
         player = _Player(self, session)
         if not job.optional and self._fillers and random.random() < config.VOICE_FILLER_PROBABILITY:
@@ -644,6 +638,13 @@ class VoiceManager:
             raise
         response = " ".join(pieces).strip()
         llm_s = time.monotonic() - t1
+        if not response:
+            # Не звали по имени, и модель решила промолчать ([молчу]).
+            await player.finish()
+            _logger.info("voice_stayed_silent", extra={"data": {
+                "interest": round(job.interest, 2), "reason": "model chose silence", "llm_seconds": round(llm_s, 2)}})
+            await self._memory.log_event(ctx, bot_replied=False)
+            return
 
         session.history.append(f"{config.BOT_NAME} (ответила {display_name}): {response}")
         await self._memory.log_bot_reply(ctx, response)

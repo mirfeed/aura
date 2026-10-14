@@ -290,7 +290,7 @@ WHISPER_MODEL: str = _get_str("WHISPER_MODEL", "large-v3-turbo")  # small/medium
 WHISPER_DEVICE: str = _get_str("WHISPER_DEVICE", "auto")  # auto / cuda / cpu
 WHISPER_COMPUTE_TYPE: str = _get_str("WHISPER_COMPUTE_TYPE", "auto")
 WHISPER_LANGUAGE: str = _get_str("WHISPER_LANGUAGE", "ru")  # пусто = автоопределение
-WHISPER_BEAM_SIZE: int = _get_int("WHISPER_BEAM_SIZE", 3)
+WHISPER_BEAM_SIZE: int = _get_int("WHISPER_BEAM_SIZE", 5)
 WHISPER_INITIAL_PROMPT: str = _get_str(
     "WHISPER_INITIAL_PROMPT", "Разговор друзей в голосовом чате Discord, обращаются к Ауре."
 )
