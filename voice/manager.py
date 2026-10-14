@@ -25,7 +25,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Deque, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Deque, Dict, List, Optional, Tuple
 
 import discord
 import numpy as np
@@ -621,23 +621,52 @@ class VoiceManager:
         t1 = time.monotonic()
         first_audio_s = -1.0
         tts_s = 0.0
-        pieces = []
+        llm_s = 0.0
+        pieces: List[str] = []
+        waiting: List[str] = []   # написано моделью, но ещё не озвучено
+        more = asyncio.Event()
+        llm_finished = False
+
+        async def read_llm() -> None:
+            nonlocal llm_s, llm_finished
+            try:
+                async for piece in self._pipeline.generate_stream(ctx):
+                    pieces.append(piece)
+                    waiting.append(piece)
+                    more.set()
+            finally:
+                llm_s = time.monotonic() - t1
+                llm_finished = True  # флаг, а не reader.done(): задача помечается готовой позже, чем будит цикл
+                more.set()
+
+        reader = asyncio.create_task(read_llm())
         try:
-            async for piece in self._pipeline.generate_stream(ctx):
-                pieces.append(piece)
+            while True:
+                if not waiting:
+                    if llm_finished:
+                        break
+                    await more.wait()
+                    more.clear()
+                    continue
+                # Первое предложение — сразу, а всё, что модель дописала, пока оно озвучивалось и
+                # игралось, — одним куском: у F5 почти постоянная цена за вызов (~2 с), и по
+                # предложению за раз между ними выходили паузы («заикается»).
+                chunk = " ".join(waiting)
+                waiting.clear()
                 t2 = time.monotonic()
-                pcm = await self._tts.synthesize(piece, self._state.mood.value)
+                pcm = await self._tts.synthesize(chunk, self._state.mood.value)
                 tts_s += time.monotonic() - t2
                 if pcm:
                     if first_audio_s < 0:
                         first_audio_s = time.monotonic() - job.heard_at
                     session.reply_speaking = True
                     player.put(pcm)
+            await reader  # ошибка модели — наружу, в _reply_loop
         except asyncio.CancelledError:
+            reader.cancel()
             await player.abort()
             raise
         response = " ".join(pieces).strip()
-        llm_s = time.monotonic() - t1
         if not response:
             # Не звали по имени, и модель решила промолчать ([молчу]).
             await player.finish()

@@ -495,7 +495,6 @@ class F5TTS:
         mono = _wav_to_pcm48(wav)
         if not mono.size:
             return b""
-        mono = np.concatenate([mono, np.zeros(int(_SAMPLE_RATE * 0.15), dtype=np.float32)])
         _logger.debug(
             "Synthesized (F5)",
             extra={"data": {
