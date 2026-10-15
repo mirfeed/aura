@@ -245,27 +245,35 @@ class VoiceManager:
                     extra={"data": {"model": name, "error": str(exc)}},
                     exc_info=True,
                 )
-        # Заранее озвученные «хм», «ну...» — играются мгновенно, пока она думает.
-        if config.VOICE_FILLERS and not self._fillers and self._tts.ready:
-            for word in ("м-м.", "секунду."):
-                try:
-                    pcm = await self._tts.synthesize(word)
-                    if pcm:
-                        self._fillers.append(pcm)
-                except Exception:  # noqa: BLE001
-                    pass
+        if config.VOICE_FILLERS and not self._fillers and self._tts.ready and getattr(self._tts, "server", None) is None:
+            await self._build_fillers()
+
+    async def _build_fillers(self) -> None:
+        """Заранее озвученные «хм», «ну...» — играются мгновенно, пока она думает (тем же голосом)."""
+        fillers = []
+        for word in ("м-м.", "секунду."):
+            try:
+                pcm = await self._tts.synthesize(word)
+                if pcm:
+                    fillers.append(pcm)
+            except Exception:  # noqa: BLE001
+                pass
+        self._fillers = fillers
 
     def recently_active(self, seconds: float) -> bool:
         """Был ли живой разговор в каком-нибудь войсе за последние *seconds* секунд."""
         now = time.monotonic()
         return any(now - s.last_utterance < seconds for s in self._sessions.values())
 
-    async def leave_all(self) -> None:
+    async def leave_all(self, stop_voice_server: bool = False) -> None:
         for guild_id in list(self._sessions):
             await self.leave(guild_id)
+        stop = getattr(self._tts, "stop_server", None)
+        if stop_voice_server and stop is not None:
+            await stop()
 
     async def close(self) -> None:
-        await self.leave_all()
+        await self.leave_all(stop_voice_server=True)
         self._stt.close()
         self._tts.close()
 
@@ -331,6 +339,13 @@ class VoiceManager:
         if guild_id in self._sessions:
             await self.leave(guild_id)
 
+        # Сервер F5 (F5_AUTO) поднимается ~20 с — пусть грузится, пока подключаемся.
+        started = getattr(self._tts, "voice_started", None)
+        if started is not None:
+            await started()
+            if config.VOICE_FILLERS:
+                asyncio.create_task(self._build_fillers())
+
         try:
             vc = await channel.connect(cls=voice_recv.VoiceRecvClient, self_deaf=False, timeout=20)
         except Exception as exc:  # noqa: BLE001
@@ -339,6 +354,7 @@ class VoiceManager:
                 extra={"data": {"channel_id": channel.id, "error": str(exc)}},
                 exc_info=True,
             )
+            self._voice_idle()
             return False
 
         session = _GuildSession(vc=vc, channel_id=channel.id, queue=asyncio.Queue(maxsize=20))
@@ -421,6 +437,13 @@ class VoiceManager:
         except Exception:  # noqa: BLE001
             pass
         _logger.info("Left voice channel", extra={"data": {"guild_id": guild_id}})
+        self._voice_idle()
+
+    def _voice_idle(self) -> None:
+        """Ни в одном войсе — сервер F5 погаснет через F5_IDLE_STOP_MIN минут (если снова не позовут)."""
+        ended = getattr(self._tts, "voice_ended", None)
+        if not self._sessions and ended is not None:
+            ended()
 
     async def on_voice_state_update(
         self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
@@ -428,6 +451,13 @@ class VoiceManager:
         """Выйти, если в канале не осталось людей; убрать сессию, если бота выкинули."""
         session = self._sessions.get(member.guild.id)
         if session is None:
+            # Человек зашёл в войс, а её там нет — заранее поднять голос F5 (WSL просыпается ~30 с):
+            # скорее всего, сейчас позовут.  Не позовут — сервер погаснет сам через F5_IDLE_STOP_MIN минут.
+            started = getattr(self._tts, "voice_started", None)
+            if (started is not None and not member.bot and before.channel is None
+                    and after.channel is not None and not game_mode.active()):
+                await started()
+                self._voice_idle()
             return
 
         if self._client.user is not None and member.id == self._client.user.id:
@@ -435,6 +465,7 @@ class VoiceManager:
                 self._sessions.pop(member.guild.id, None)
                 if session.worker:
                     session.worker.cancel()
+                self._voice_idle()
             elif after.channel.id != session.channel_id:
                 session.channel_id = after.channel.id  # перетащили в другой канал
             return

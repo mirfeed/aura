@@ -64,7 +64,7 @@ function Show-Status {
     } else { Write-Host "Ollama:  выключена" -ForegroundColor DarkGray }
 
     if (Test-Url "http://127.0.0.1:8081/docs") { Write-Host "F5 голос: работает" -ForegroundColor Green }
-    else { Write-Host "F5 голос: выключен (говорит Silero)" -ForegroundColor DarkGray }
+    else { Write-Host "F5 голос: выключен — включится сам, когда она зайдёт в войс" -ForegroundColor DarkGray }
 
     if (Test-Path $GameFlag) { Write-Host "Игровой режим: ВКЛ — только чат, видеопамять отдана игре" -ForegroundColor Cyan }
 
@@ -126,15 +126,10 @@ function Stop-F5 {
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
-function Start-F5 {
-    Start-Process cmd -ArgumentList '/c', 'title Aura: F5 голос & wsl -- bash /mnt/d/ai/f5/run_f5.sh & pause' -WorkingDirectory $Root
-}
-
 function Switch-GameMode {
     if (Test-Path $GameFlag) {
         Remove-Item $GameFlag
-        Write-Host "Игровой режим выключен — войс, чтение и всё остальное снова работают." -ForegroundColor Green
-        if (-not (Test-Url "http://127.0.0.1:8081/docs")) { Start-F5; Write-Host "Запускаю голос F5 (отдельное окно)." }
+        Write-Host "Игровой режим выключен — войс и всё остальное снова работают." -ForegroundColor Green
         if (Get-Bot) { Write-Host "Модель перезагрузится целиком на видеокарту (~10 с)." }
         return
     }

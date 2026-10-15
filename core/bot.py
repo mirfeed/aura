@@ -400,7 +400,7 @@ class CompanionBot(discord.Client):
                     _logger.info("Game mode on — chat only, model partly on CPU", extra={"data": {
                         "gpu_layers": config.GAME_MODE_GPU_LAYERS, "threads": config.GAME_MODE_THREADS}})
                     if self._voice is not None:
-                        await self._voice.leave_all()
+                        await self._voice.leave_all(stop_voice_server=True)
                 else:
                     _logger.info("Game mode off", extra={"data": {}})
                     if self._voice is not None and config.VOICE_PRELOAD:
@@ -1225,9 +1225,7 @@ class CompanionBot(discord.Client):
 
                 if config.BIRTHDAYS_ENABLED and phase not in ("asleep",):
                     await self._maybe_congratulate()
-                if game_mode.active():
-                    continue  # события дня и чтение — модель; в игровом режиме она только в чате
-                if self._life is not None and phase != "asleep":
+                if self._life is not None and phase != "asleep" and not game_mode.active():
                     await self._maybe_life_event()
                 if self._library is not None and phase != "asleep":
                     await self._maybe_read()
@@ -1248,6 +1246,9 @@ class CompanionBot(discord.Client):
         last = await self._library.last_session_at()
         if last is not None and (now - last).total_seconds() / 60 < self._next_read_min:
             return
+        if (game_mode.active() and last is not None
+                and (now - last).total_seconds() / 60 < config.READING_INTERVAL_MIN):
+            return  # в игре сессия идёт ~75 с на процессоре (и чат её ждёт) — читает реже, без «запоя»
         if time.monotonic() - self._last_read_try < 600:
             return  # прошлая попытка не удалась — не долбить модель каждые 20 секунд
         if self._pipeline.busy or self._pipeline.seconds_since_last_request < (45 if binge else 90):

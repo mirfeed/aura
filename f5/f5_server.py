@@ -97,7 +97,9 @@ class Engine:
         from ruaccent import RUAccent
 
         self.accent = RUAccent()
-        self.accent.load(omograph_model_size="turbo3.1", use_dictionary=True, tiny_mode=False)
+        # tiny_mode: словарь ударений на 0.5 ГБ вместо 2.1 ГБ оперативки и грузится за 1 с вместо 7;
+        # на проверочных фразах ударения те же (расходятся только односложные слова и «ё»).
+        self.accent.load(omograph_model_size="turbo3.1", use_dictionary=True, tiny_mode=True)
         log("RUAccent loaded")
 
         self.lock = threading.Lock()

@@ -19,9 +19,11 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+import subprocess
 import time
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 import numpy as np
@@ -527,6 +529,109 @@ class F5TTS:
                 pass
 
 
+def _wsl_path(path: Path) -> str:
+    """D:\\ai\\f5\\run_f5.sh → /mnt/d/ai/f5/run_f5.sh"""
+    posix = path.as_posix()
+    return f"/mnt/{path.drive.rstrip(':').lower()}{posix[len(path.drive):]}"
+
+
+class F5Server:
+    """
+    Сервер F5 в WSL — только пока она в войсе (F5_AUTO): поднимается при заходе, гасится через
+    F5_IDLE_STOP_MIN минут после выхода, и WSL следом засыпает и отдаёт память.
+    """
+
+    START_TIMEOUT_S = 60.0
+
+    def __init__(self) -> None:
+        self._proc: Optional[subprocess.Popen] = None  # type: ignore[type-arg]
+        self._stop_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
+        self._cache_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
+        self._started_at = 0.0
+
+    @staticmethod
+    async def up() -> bool:
+        import aiohttp
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{config.F5_API_URL}/docs", timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                    return resp.status == 200
+        except Exception:  # noqa: BLE001
+            return False
+
+    @property
+    def starting(self) -> bool:
+        return (self._proc is not None and self._proc.poll() is None
+                and time.monotonic() - self._started_at < self.START_TIMEOUT_S)
+
+    def _cancel_stop(self) -> None:
+        if self._stop_task is not None and self._stop_task is not asyncio.current_task():
+            self._stop_task.cancel()
+        self._stop_task = None
+
+    async def start(self) -> None:
+        self._cancel_stop()
+        if (self._proc is not None and self._proc.poll() is None) or await self.up():
+            return
+        config.LOG_DIR.mkdir(exist_ok=True)
+        with open(config.LOG_DIR / "f5.log", "ab") as log:
+            self._proc = subprocess.Popen(
+                ["wsl.exe", "--", "bash", _wsl_path(config.F5_SCRIPT)],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        self._started_at = time.monotonic()
+        _logger.info("F5 server starting", extra={"data": {"pid": self._proc.pid}})
+        self._cache_task = asyncio.create_task(self._drop_wsl_cache_when_up())
+
+    async def _drop_wsl_cache_when_up(self) -> None:
+        """
+        Загружаясь, сервер читает гигабайты файлов (модель, torch), и WSL держит их в кэше — Windows видит
+        это как занятую память (+4.5 ГБ у vmmem).  Когда сервер поднялся, кэш больше не нужен — сбросить.
+        """
+        await self.wait_up()
+        await asyncio.sleep(20)  # первые фразы дочитают, что им нужно
+        try:
+            await asyncio.to_thread(
+                subprocess.run, ["wsl.exe", "-u", "root", "-e", "sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches"],
+                capture_output=True, timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def wait_up(self) -> bool:
+        while self.starting:
+            if await self.up():
+                _logger.info("F5 server up", extra={"data": {
+                    "seconds": round(time.monotonic() - self._started_at, 1)}})
+                self._started_at = 0.0
+                return True
+            await asyncio.sleep(1)
+        return await self.up()
+
+    def stop_later(self, delay_s: float) -> None:
+        self._cancel_stop()
+        self._stop_task = asyncio.create_task(self._stop_after(delay_s))
+
+    async def _stop_after(self, delay_s: float) -> None:
+        await asyncio.sleep(delay_s)
+        await self.stop()
+
+    async def stop(self) -> None:
+        self._cancel_stop()
+        alive = self._proc is not None and self._proc.poll() is None
+        if not alive and not await self.up():
+            return  # проверка не будит WSL: pkill зовём, только если сервер правда есть
+        await asyncio.to_thread(
+            subprocess.run, ["wsl.exe", "-e", "pkill", "-f", "f5_server.py"],
+            capture_output=True, timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        self._proc = None
+        self._started_at = 0.0
+        _logger.info("F5 server stopped", extra={"data": {}})
+
+
 class FallbackTTS:
     """F5-TTS, а если сервер не отвечает — та же фраза через Silero."""
 
@@ -534,6 +639,7 @@ class FallbackTTS:
         self._primary = primary or F5TTS()
         self._silero = TextToSpeech()
         self._primary_down_until = 0.0
+        self.server: Optional[F5Server] = F5Server() if config.F5_AUTO else None
 
     @property
     def ready(self) -> bool:
@@ -542,10 +648,27 @@ class FallbackTTS:
     async def load(self) -> None:
         # Silero грузим всегда: без него нечем говорить, пока F5 недоступен.
         await self._silero.load()
+        if self.server is not None:
+            if not await self.server.up():
+                return  # F5 поднимется сам, когда она зайдёт в войс
+            self.voice_ended()  # уже запущен (вручную или с прошлого раза) — погаснет, если в войс не позовут
         try:
             await self._primary.load()
         except Exception as exc:  # noqa: BLE001
             self._mark_down(exc)
+
+    async def voice_started(self) -> None:
+        if self.server is not None:
+            await self.server.start()
+            self._primary_down_until = 0.0  # новый сервер — не ждать паузу после прошлого сбоя
+
+    def voice_ended(self) -> None:
+        if self.server is not None:
+            self.server.stop_later(config.F5_IDLE_STOP_MIN * 60)
+
+    async def stop_server(self) -> None:
+        if self.server is not None:
+            await self.server.stop()
 
     def _mark_down(self, exc: Exception) -> None:
         self._primary_down_until = time.monotonic() + config.F5_RETRY_AFTER_S
@@ -556,6 +679,8 @@ class FallbackTTS:
         )
 
     async def synthesize(self, text: str, mood: str = "neutral") -> bytes:
+        if self.server is not None and self.server.starting:
+            await self.server.wait_up()  # первые реплики после захода — дождаться своего голоса, не Silero
         if time.monotonic() >= self._primary_down_until:
             try:
                 return await self._primary.synthesize(text, mood)

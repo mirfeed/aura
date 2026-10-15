@@ -127,7 +127,7 @@ OLLAMA_TEMPERATURE: float = _get_float("OLLAMA_TEMPERATURE", 0.85)
 # Maximum tokens the model may generate per reply.  Keeps responses concise.
 MAX_RESPONSE_TOKENS: int = _get_int("MAX_RESPONSE_TOKENS", 180)
 
-# Игровой режим (aura.bat → G): только чат — без войса, чтения, раздумий и сообщений по своей инициативе;
+# Игровой режим (aura.bat → G): только чат — без войса, раздумий и сообщений по своей инициативе, читает реже;
 # модель частично на CPU, чтобы освободить видеопамять под игру.  Включён, пока лежит data/game_mode.flag.
 # Замеры 12B на RTX 3060 + 7800X3D: 8 слоёв — 2.2 ГБ видеопамяти и ~7 ток/с; 14 — 3.0 ГБ, ~8 ток/с
 # (всё на видеокарте — 8.2 ГБ, 30 ток/с).  Совсем без видеокарты (0) промпт считается 1.5–2 минуты.
@@ -335,6 +335,12 @@ F5_TIMEOUT: float = _get_float("F5_TIMEOUT", 20.0)          # секунд на 
 F5_SPEED: float = _get_float("F5_SPEED", 1.0)
 # После сбоя F5 столько секунд сразу говорим через Silero, не дожидаясь таймаутов.
 F5_RETRY_AFTER_S: int = _get_int("F5_RETRY_AFTER_S", 30)
+# Сервер F5 поднимается сам, когда она заходит в войс (~20 с: WSL просыпается, модель грузится), и гасится
+# через F5_IDLE_STOP_MIN минут после выхода — вне войса он зря держит ~5 ГБ оперативки (WSL) и ~1 ГБ
+# видеопамяти.  F5_AUTO=0 — как раньше, запускать вручную (aura.bat → 9).
+F5_AUTO: bool = _get_bool("F5_AUTO", True)
+F5_IDLE_STOP_MIN: float = _get_float("F5_IDLE_STOP_MIN", 5.0)
+F5_SCRIPT: Path = _PROJECT_ROOT / "f5" / "run_f5.sh"
 
 
 # ---------------------------------------------------------------------------
