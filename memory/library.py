@@ -635,7 +635,7 @@ class Library:
             end = cut
         return text[start:end].strip(), end
 
-    async def images_between(self, book_id: int, start: int, end: int, limit: int = 3) -> List[bytes]:
+    async def images_between(self, book_id: int, start: int, end: int, limit: int = 5) -> List[bytes]:
         """Иллюстрации, которые стоят в этом куске текста (по порядку, не больше limit)."""
         async with self._db.execute(
             "SELECT file FROM book_images WHERE book_id = ? AND pos >= ? AND pos < ? ORDER BY pos LIMIT ?",

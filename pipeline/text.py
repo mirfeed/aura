@@ -375,6 +375,21 @@ _READ_SCHEMA: Dict[str, Any] = {
                        "seen": {"type": "string"}, "love": {"type": "boolean"}}, "required": ["seen", "love"]}}},
     "required": ["summary", "story", "thought", "hooked"],
 }
+
+
+def _read_schema(n_illus: int) -> Dict[str, Any]:
+    """
+    Есть иллюстрации — поле про них первое и обязательное, ровно по одной записи на картинку: необязательное
+    последнее поле модель просто не заполняла (закрывала JSON после hooked), и картинки проходили мимо неё.
+    """
+    if not n_illus:
+        return _READ_SCHEMA
+    props = dict(_READ_SCHEMA["properties"])
+    illus = {**props.pop("illustrations"), "minItems": n_illus, "maxItems": n_illus}
+    return {"type": "object", "properties": {"illustrations": illus, **props},
+            "required": ["illustrations"] + _READ_SCHEMA["required"]}
+
+
 _VERDICT_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {"opinion": {"type": "string"}, "rating": {"type": "integer"}},
@@ -1007,7 +1022,8 @@ class TextPipeline:
             "сюжет на самом интересном месте; 5 — нормально, можно и отложить; 0–2 — скучно, тянет бросить. "
             "Будь честной и строгой: высокие оценки — только когда правда захватило."
         )
-        data = await self.call_json(system, user, _READ_SCHEMA, num_predict=600, images=images or None)
+        data = await self.call_json(system, user, _read_schema(n_illus), num_predict=600 + 80 * n_illus,
+                                    images=images or None)
         if not data or not str(data.get("summary") or "").strip():
             return None
         out: Dict[str, Any] = {k: str(data.get(k) or "").strip() for k in ("summary", "story", "thought", "share")}
