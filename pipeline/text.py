@@ -1301,8 +1301,9 @@ class TextPipeline:
                 "targets": {"type": "array", "items": {"type": "string"}},
                 "message": {"type": "string"},
                 "anonymous": {"type": "boolean"},
+                "own_words": {"type": "boolean"},
             },
-            "required": ["is_request", "targets", "message", "anonymous"],
+            "required": ["is_request", "targets", "message", "anonymous", "own_words"],
         }
         ctx_lines = "\n".join(history[-10:]) or "(пусто)"
         data = await self.call_json(
@@ -1321,6 +1322,11 @@ class TextPipeline:
             "Если сообщение только упомянуто («скинь им про печеньку»), найди в контексте сам его текст "
             "и передай его, а не слова «сообщение про …»; "
             "не путай с тем, что писала сама Aura. anonymous — true, если просят не говорить, от кого это. "
+            f"own_words — true, если просят, чтобы {config.BOT_NAME} САМА рассказала или показала что-то своё "
+            "(о себе, о том, что читает или любит, своё мнение, объяснить что-то): «расскажи Даше, что ты "
+            "читаешь», «поделись с ней своим артом», «объясни ему правила»; тогда message — о чём рассказать. "
+            f"false — если надо передать слова или новость самого {requester} («передай, что я опоздаю», "
+            "«скажи ей, что я её жду»). "
             "Если это не такая просьба — is_request=false, остальное пустое.",
             schema,
             num_predict=200,
@@ -1339,28 +1345,47 @@ class TextPipeline:
         if not targets:
             return None
         return {"targets": targets, "message": str(data.get("message") or "").strip(),
-                "anonymous": bool(data.get("anonymous"))}
+                "anonymous": bool(data.get("anonymous")), "own_words": bool(data.get("own_words"))}
 
     async def relay_text(self, target: "MessageContext", requester: str, what: str, request: str = "",
-                         anonymous: bool = False, media: Optional[List[Any]] = None) -> str:
+                         anonymous: bool = False, own_words: bool = False,
+                         media: Optional[List[Any]] = None) -> str:
         """
         Её сообщение человеку по просьбе *requester*.  Просят поделиться картинкой («скинь ей свой любимый
         арт») и передан *media* — туда кладётся файл из её коллекции (иначе писала «вот арт» без арта).
+        *own_words* — просили рассказать что-то своё («расскажи Даше, что ты читаешь»): она рассказывает
+        сама, а не «X просил передать: …», будто это цитата.
         """
-        fallback = what if anonymous else f"{requester} просил(а) передать: {what}"
+        fallback = what if anonymous or own_words else f"{requester} просил(а) передать: {what}"
         try:
+            if own_words and not target.content:
+                target.content = request or what  # чтобы в промпт попало то, о чём рассказывать (например, книга)
             system = self._build_system(target, "short")
             history = "\n".join(target.recent_channel_history[-6:]) or "(вы ещё не переписывались)"
-            user = (
-                f"Личная переписка с {target.author_display_name}. Последние сообщения:\n{history}\n\n"
-                f"{requester} попросил(а) тебя написать {target.author_display_name}. Его(её) просьба дословно: "
-                f"«{request or what}». Суть: {what}.\n"
-                "Напиши это в личку своими словами, точно по смыслу просьбы — ничего не выдумывай и не меняй; "
-                + ("пиши как будто сама решила — НЕ упоминай, что тебя кто-то попросил, и не называй "
-                   f"{requester}. " if anonymous else
-                   f"скажи, что это от {requester} (имя пиши именно так). ")
-                + "Коротко, одно-два предложения."
-            )
+            head = f"Личная переписка с {target.author_display_name}. Последние сообщения:\n{history}\n\n"
+            if own_words:
+                user = head + (
+                    f"{requester} попросил(а) тебя рассказать {target.author_display_name} кое-что от себя. "
+                    f"Просьба дословно: «{request or what}». О чём: {what}.\n"
+                    "Расскажи это сама, своими словами, как подруге — живо, с парой конкретных деталей (например, "
+                    "о чём книга и чем цепляет), только правду о себе "
+                    "(что знаешь из того, кто ты и что с тобой сейчас; ничего не выдумывай). Это твой рассказ, "
+                    f"а не передача чужих слов: не пиши «{requester} просил передать». "
+                    + ("Про просьбу не упоминай. " if anonymous else
+                       f"Можно мимоходом сказать, что {requester} попросил(а) тебя рассказать "
+                       "(например: «… попросил рассказать тебе, что я сейчас читаю — …»). ")
+                    + "Два-три предложения."
+                )
+            else:
+                user = head + (
+                    f"{requester} попросил(а) тебя написать {target.author_display_name}. Его(её) просьба дословно: "
+                    f"«{request or what}». Суть: {what}.\n"
+                    "Напиши это в личку своими словами, точно по смыслу просьбы — ничего не выдумывай и не меняй; "
+                    + ("пиши как будто сама решила — НЕ упоминай, что тебя кто-то попросил, и не называй "
+                       f"{requester}. " if anonymous else
+                       f"скажи, что это от {requester} (имя пиши именно так). ")
+                    + "Коротко, одно-два предложения."
+                )
             share = (media is not None and self._media is not None
                      and (MediaPicker.asked(request) or MediaPicker.asked(what)))
             items = list(enumerate(self._media.library(), 1)) if share else []
@@ -1378,7 +1403,7 @@ class TextPipeline:
                     "ref": wanted[0] if wanted else None, "relay": True, "file": path.name if path else None}})
             # «normal» — до двух предложений, как и просим: «short» оставлял одно, и от «Даш, привет! …» оставалось
             # только «Даш, привет!».
-            text = self._post_process(raw, target, "normal") if raw.strip() else ""
+            text = self._post_process(raw, target, "long" if own_words else "normal") if raw.strip() else ""
             return text or fallback
         except Exception:  # noqa: BLE001
             return fallback

@@ -754,6 +754,7 @@ class CompanionBot(discord.Client):
         now = datetime.now(tz=timezone.utc)
         text_in = message.content or ""
         anonymous = False
+        own_words = False  # «расскажи ей, что ты читаешь» — рассказать от себя, а не передать чужие слова
         others = [m for m in message.mentions if not m.bot and m.id not in (self.user.id, message.author.id)]
 
         # Ждала уточнения «кому?» — ищем имена в этом сообщении.
@@ -783,6 +784,7 @@ class CompanionBot(discord.Client):
                 if reparsed and reparsed.get("message"):
                     what, request = reparsed["message"], text_in
                 anonymous = bool(pending.get("anonymous"))
+                own_words = bool(pending.get("own_words"))
                 for m in others:
                     targets[m.id] = m.display_name
                 for key in found_keys:
@@ -811,6 +813,7 @@ class CompanionBot(discord.Client):
             self._message_handler.relay_recent[message.author.id] = time.monotonic()
             what = parsed["message"] or text_in
             anonymous = bool(parsed.get("anonymous"))
+            own_words = bool(parsed.get("own_words"))
             names = [n for n in parsed["targets"] if n.strip().lower() not in _RELAY_PRONOUNS]
             last = self._relay_last.get(message.author.id)
             if last is not None and (now - last["at"]).total_seconds() > config.RELAY_FOLLOWUP_S:
@@ -863,7 +866,7 @@ class CompanionBot(discord.Client):
                 tctx.recent_channel_history = await self._dm_history(dm, 6)
                 pics: List[Any] = []
                 text = await self._pipeline.relay_text(tctx, message.author.display_name, what, request,
-                                                       anonymous=anonymous, media=pics)
+                                                       anonymous=anonymous, own_words=own_words, media=pics)
                 await self._message_handler._send_with_typing(dm, text, random.uniform(1.0, 2.5), media=pics)
                 await self._memory.log_bot_reply(tctx, text)
                 sent.append(f"{name}: «{text}»" + (" (и картинку из своей коллекции)" if pics else ""))
@@ -881,7 +884,7 @@ class CompanionBot(discord.Client):
         if unknown:
             self._pending_relay[message.author.id] = {
                 "unknown": unknown, "message": what, "request": request, "at": now, "tries": 0,
-                "anonymous": anonymous,
+                "anonymous": anonymous, "own_words": own_words,
             }
             self._message_handler.relay_pending_ids.add(message.author.id)
             _logger.info("Relay target unknown", extra={"data": {"from": message.author.id, "unknown": unknown}})
