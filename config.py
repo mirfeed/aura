@@ -286,11 +286,12 @@ VAD_MIN_SPEECH_MS: int = _get_int("VAD_MIN_SPEECH_MS", 400)
 VAD_MAX_SPEECH_S: float = _get_float("VAD_MAX_SPEECH_S", 15.0)
 
 # Кто расшифровывает речь в войсе:
-#   whisper — отдельная модель (настройки ниже), ~0.3–0.6 с на фразу;
-#   gemma   — та же Gemma, что отвечает (слышит звук сама): точнее на русском и с именами, Whisper не
-#             грузится (минус ~1 ГБ видеопамяти), но каждый ответ дольше на ~2.5 с — запрос расшифровки
-#             выбивает из кэша Ollama промпт персонажа.  Модель войса должна уметь audio (gemma4).
-VOICE_HEARING: str = _get_str("VOICE_HEARING", "whisper").lower()
+#   gemma   — та же Gemma, что отвечает (слышит звук сама): точнее на русском, с именами и сленгом, Whisper
+#             не грузится (минус ~1 ГБ видеопамяти).  ~1–1.5 с на фразу, и запрос расшифровки выбивает из
+#             кэша Ollama промпт персонажа — вживую ответ выходит на ~1.5 с позже.  Модель войса должна уметь
+#             audio (gemma4);
+#   whisper — отдельная модель (настройки ниже), ~0.3–0.6 с на фразу.
+VOICE_HEARING: str = _get_str("VOICE_HEARING", "gemma").lower()
 
 # large-v3-turbo — заметно лучше small на русском, на RTX ~0.3–0.6 с на фразу.
 WHISPER_MODEL: str = _get_str("WHISPER_MODEL", "large-v3-turbo")  # small/medium/large-v3/large-v3-turbo
