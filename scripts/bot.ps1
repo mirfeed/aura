@@ -96,6 +96,14 @@ function Show-Log {
 }
 
 function Unload-Ollama {
+    # llama-server, у которого умерла Ollama (её убили, а процесс модели остался), зря держит видеопамять.
+    $alive = @(Get-Process ollama -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    Get-CimInstance Win32_Process -Filter "name='llama-server.exe'" |
+        Where-Object { $alive -notcontains $_.ParentProcessId } |
+        ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            Write-Host "Убит брошенный llama-server (PID $($_.ProcessId)) — держал видеопамять."
+        }
     if (-not (Test-Url "http://127.0.0.1:11434/api/version")) { Write-Host "Ollama не запущена."; return }
     $ps = Invoke-RestMethod "http://127.0.0.1:11434/api/ps" -TimeoutSec 5
     if (-not $ps.models) { Write-Host "В видеопамяти ничего нет."; return }
