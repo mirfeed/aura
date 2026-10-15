@@ -861,11 +861,12 @@ class CompanionBot(discord.Client):
                 dm = target.dm_channel or await target.create_dm()
                 tctx = await self._initiator_context(target, dm)
                 tctx.recent_channel_history = await self._dm_history(dm, 6)
+                pics: List[Any] = []
                 text = await self._pipeline.relay_text(tctx, message.author.display_name, what, request,
-                                                       anonymous=anonymous)
-                await self._message_handler._send_with_typing(dm, text, random.uniform(1.0, 2.5))
+                                                       anonymous=anonymous, media=pics)
+                await self._message_handler._send_with_typing(dm, text, random.uniform(1.0, 2.5), media=pics)
                 await self._memory.log_bot_reply(tctx, text)
-                sent.append(f"{name}: «{text}»")
+                sent.append(f"{name}: «{text}»" + (" (и картинку из своей коллекции)" if pics else ""))
                 self._relay_history.setdefault(message.author.id, []).append((now, name, text))
                 recent.append((now, uid))
                 if uid in learned:
@@ -887,7 +888,9 @@ class CompanionBot(discord.Client):
 
         parts = []
         if sent:
-            parts.append("ты написала в личку ТОЛЬКО этим людям — " + "; ".join(sent))
+            parts.append("ты написала в личку ТОЛЬКО этим людям — " + "; ".join(sent)
+                         + f". Это уже у них: не пересказывай заново и не проси {message.author.display_name} "
+                         "ничего передавать — просто коротко скажи, что написала")
         if failed:
             parts.append("НЕ получилось написать: " + ", ".join(failed))
         if unknown:

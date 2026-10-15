@@ -345,6 +345,8 @@ def series_of(title: str) -> Tuple[str, int]:
 def _title_from_name(path: Path) -> Tuple[str, str]:
     """«Автор - Название.fb2» → (название, автор); иначе имя файла."""
     stem = re.sub(r"[_]+", " ", path.stem if path.is_file() else path.name).strip()
+    # «… dark», «(light)» — вариант оформления файла, а не часть названия
+    stem = re.sub(r"[\s(\[]+(?:dark|light|night|mobile|print)[)\]]?$", "", stem, flags=re.I).strip()
     m = re.match(r"(.+?)\s+[-–—]\s+(.+)", stem)
     return (m.group(2).strip(), m.group(1).strip()) if m else (stem, "")
 

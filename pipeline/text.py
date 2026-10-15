@@ -1342,8 +1342,11 @@ class TextPipeline:
                 "anonymous": bool(data.get("anonymous"))}
 
     async def relay_text(self, target: "MessageContext", requester: str, what: str, request: str = "",
-                         anonymous: bool = False) -> str:
-        """Её сообщение человеку по просьбе *requester*."""
+                         anonymous: bool = False, media: Optional[List[Any]] = None) -> str:
+        """
+        Её сообщение человеку по просьбе *requester*.  Просят поделиться картинкой («скинь ей свой любимый
+        арт») и передан *media* — туда кладётся файл из её коллекции (иначе писала «вот арт» без арта).
+        """
         fallback = what if anonymous else f"{requester} просил(а) передать: {what}"
         try:
             system = self._build_system(target, "short")
@@ -1358,8 +1361,24 @@ class TextPipeline:
                    f"скажи, что это от {requester} (имя пиши именно так). ")
                 + "Коротко, одно-два предложения."
             )
+            share = (media is not None and self._media is not None
+                     and (MediaPicker.asked(request) or MediaPicker.asked(what)))
+            items = list(enumerate(self._media.library(), 1)) if share else []
+            if items:
+                user += ("\nПросят поделиться картинкой — выбери подходящую из своей коллекции и поставь её "
+                         "метку (сама картинка уйдёт вместе с сообщением).\n" + self._media.prompt_block(items))
             raw = await self._complete(system, user, priority=PRIORITY_CHAT)
-            text = self._post_process(raw, target, "short") if raw.strip() else ""
+            if items:
+                raw, wanted = MediaPicker.extract(raw)
+                path = self._media.pick(wanted[0], target.channel_id) if wanted else None
+                if path is not None:
+                    media.append(path)  # type: ignore[union-attr]
+                    self._media.mark_sent(target.channel_id, path)
+                _logger.info("Media picked", extra={"data": {
+                    "ref": wanted[0] if wanted else None, "relay": True, "file": path.name if path else None}})
+            # «normal» — до двух предложений, как и просим: «short» оставлял одно, и от «Даш, привет! …» оставалось
+            # только «Даш, привет!».
+            text = self._post_process(raw, target, "normal") if raw.strip() else ""
             return text or fallback
         except Exception:  # noqa: BLE001
             return fallback
@@ -1446,7 +1465,9 @@ class TextPipeline:
         if not caption.lower().startswith("иллюстрация из"):
             return False
         talk = "\n".join([context.content or ""] + list(context.recent_channel_history[-4:]))
-        return not (self.library is not None and self.library.mentions_my_book(talk))
+        # «что за книгу ты читаешь» — тоже про книгу, хоть название и не сказали
+        return not (_BOOK_TALK_RE.search(talk)
+                    or (self.library is not None and self.library.mentions_my_book(talk)))
 
     def _remember_images(self, context: "MessageContext", images: List[str]) -> List[str]:
         """Новые картинки запомнить; если их нет — подложить недавнюю картинку из этого канала."""
