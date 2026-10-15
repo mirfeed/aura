@@ -31,6 +31,7 @@ import discord
 import numpy as np
 
 import config
+from core import game_mode
 from utils.logger import anonymise_author_id, get_logger
 
 if TYPE_CHECKING:
@@ -62,6 +63,8 @@ _ALREADY_LINES = ["я уже тут, вообще-то.", "я и так здес
 _NOT_IN_VOICE_LINES = ["а ты сам-то где? зайди в войс сначала.", "ты не в голосовом. гений."]
 _LEAVE_LINES = ["ну и пожалуйста.", "ухожу. не скучай.", "хм. ладно."]
 _FAIL_LINES = ["не могу зайти. права проверь.", "что-то мешает подключиться. хм."]
+# Игровой режим (aura.bat → G): видеокарта отдана игре, она только в чате.
+_GAME_MODE_LINES = ["не, я сейчас только в чате. пиши сюда.", "в войс не пойду, сейчас только переписываюсь."]
 
 # Голосовая команда выхода: Whisper пишет «выйти своица», «выйди из войса» и т.п.
 _VOICE_LEAVE_RE = re.compile(r"(выйди|выйти|выходи|уйди|покинь|отключись|ливни|ливай)", re.IGNORECASE)
@@ -257,9 +260,12 @@ class VoiceManager:
         now = time.monotonic()
         return any(now - s.last_utterance < seconds for s in self._sessions.values())
 
-    async def close(self) -> None:
+    async def leave_all(self) -> None:
         for guild_id in list(self._sessions):
             await self.leave(guild_id)
+
+    async def close(self) -> None:
+        await self.leave_all()
         self._stt.close()
         self._tts.close()
 
@@ -287,6 +293,10 @@ class VoiceManager:
                 return False
             await self.leave(guild.id)
             await message.reply(_pick(_LEAVE_LINES), mention_author=False)
+            return True
+
+        if game_mode.active():
+            await message.reply(_pick(_GAME_MODE_LINES), mention_author=False)
             return True
 
         voice = getattr(message.author, "voice", None)

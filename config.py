@@ -127,6 +127,14 @@ OLLAMA_TEMPERATURE: float = _get_float("OLLAMA_TEMPERATURE", 0.85)
 # Maximum tokens the model may generate per reply.  Keeps responses concise.
 MAX_RESPONSE_TOKENS: int = _get_int("MAX_RESPONSE_TOKENS", 180)
 
+# Игровой режим (aura.bat → G): только чат — без войса, чтения, раздумий и сообщений по своей инициативе;
+# модель частично на CPU, чтобы освободить видеопамять под игру.  Включён, пока лежит data/game_mode.flag.
+# Замеры 12B на RTX 3060 + 7800X3D: 8 слоёв — 2.2 ГБ видеопамяти и ~7 ток/с; 14 — 3.0 ГБ, ~8 ток/с
+# (всё на видеокарте — 8.2 ГБ, 30 ток/с).  Совсем без видеокарты (0) промпт считается 1.5–2 минуты.
+GAME_MODE_FLAG: Path = _PROJECT_ROOT / "data" / "game_mode.flag"
+GAME_MODE_GPU_LAYERS: int = _get_int("GAME_MODE_GPU_LAYERS", 8)
+GAME_MODE_THREADS: int = _get_int("GAME_MODE_THREADS", 4)  # ядер CPU под модель — остальные игре
+
 # ---------------------------------------------------------------------------
 # Memory / vector store  (active from Day 3)
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-﻿# Управление Аурой: start | stop | restart | status | log | unload
+﻿# Управление Аурой: start | stop | restart | status | log | unload | game
 # Вызывается из aura.bat (меню), можно и напрямую:
 #   powershell -ExecutionPolicy Bypass -File scripts\bot.ps1 restart
 param([Parameter(Position = 0)][string]$Action = "status")
@@ -6,6 +6,7 @@ param([Parameter(Position = 0)][string]$Action = "status")
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $Flag = Join-Path $Root "data\stop.flag"
+$GameFlag = Join-Path $Root "data\game_mode.flag"
 $Log = Join-Path $Root "logs\bot.log"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -65,6 +66,8 @@ function Show-Status {
     if (Test-Url "http://127.0.0.1:8081/docs") { Write-Host "F5 голос: работает" -ForegroundColor Green }
     else { Write-Host "F5 голос: выключен (говорит Silero)" -ForegroundColor DarkGray }
 
+    if (Test-Path $GameFlag) { Write-Host "Игровой режим: ВКЛ — только чат, видеопамять отдана игре" -ForegroundColor Cyan }
+
     try {
         $gpu = (& nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits) -split ",\s*"
         Write-Host "Видеокарта: занято $([math]::Round($gpu[0] / 1024, 1)) из $([math]::Round($gpu[1] / 1024, 1)) ГБ, загрузка $($gpu[2])%"
@@ -115,6 +118,33 @@ function Unload-Ollama {
     Write-Host "Модель загрузится снова при первом сообщении Ауре."
 }
 
+function Stop-F5 {
+    # Голос F5 в WSL держит ~1 ГБ видеопамяти.  Сначала сам сервер, потом его окно (оно ждёт «нажми клавишу»).
+    wsl -e pkill -f f5_server.py 2>$null
+    Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" |
+        Where-Object { $_.CommandLine -match 'run_f5\.sh' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
+function Start-F5 {
+    Start-Process cmd -ArgumentList '/c', 'title Aura: F5 голос & wsl -- bash /mnt/d/ai/f5/run_f5.sh & pause' -WorkingDirectory $Root
+}
+
+function Switch-GameMode {
+    if (Test-Path $GameFlag) {
+        Remove-Item $GameFlag
+        Write-Host "Игровой режим выключен — войс, чтение и всё остальное снова работают." -ForegroundColor Green
+        if (-not (Test-Url "http://127.0.0.1:8081/docs")) { Start-F5; Write-Host "Запускаю голос F5 (отдельное окно)." }
+        if (Get-Bot) { Write-Host "Модель перезагрузится целиком на видеокарту (~10 с)." }
+        return
+    }
+    New-Item -ItemType File -Force -Path $GameFlag | Out-Null
+    Write-Host "Игровой режим включён — Аура только в чате, модель частично на процессоре." -ForegroundColor Cyan
+    if (Test-Url "http://127.0.0.1:8081/docs") { Stop-F5; Write-Host "Голос F5 выключен." }
+    if (Get-Bot) { Write-Host "Через ~10 с она выйдет из войса и перезагрузит модель — видеопамять освободится." }
+    else { Unload-Ollama; Write-Host "Аура выключена — режим включится, когда запустишь её." }
+}
+
 switch ($Action.ToLower()) {
     "start"   { Start-Bot }
     "stop"    { Stop-Bot }
@@ -122,5 +152,6 @@ switch ($Action.ToLower()) {
     "status"  { Show-Status }
     "log"     { Show-Log }
     "unload"  { Unload-Ollama }
-    default   { Write-Host "Неизвестная команда: $Action (start | stop | restart | status | log | unload)" }
+    "game"    { Switch-GameMode }
+    default   { Write-Host "Неизвестная команда: $Action (start | stop | restart | status | log | unload | game)" }
 }

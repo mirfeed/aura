@@ -21,6 +21,7 @@ import config
 from behavior import schedule
 from behavior.engine import DecisionEngine
 from behavior.state import BotState
+from core import game_mode
 from core.message_handler import MessageHandler
 from core.reminders import ReminderStore
 from memory.bookfinder import BookFinder
@@ -109,6 +110,7 @@ class CompanionBot(discord.Client):
         self._mind_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
         self._catchup_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
         self._life_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
+        self._game_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
         self._reminders: Optional[ReminderStore] = None
         self._life: Optional[LifeStore] = None
         self._library: Optional[Library] = None
@@ -203,8 +205,12 @@ class CompanionBot(discord.Client):
         if config.DM_CATCHUP and (self._catchup_task is None or self._catchup_task.done()):
             self._catchup_task = asyncio.create_task(self._catch_up_dms())
 
+        # Игровой режим включают и выключают на лету (aura.bat → G).
+        if self._game_task is None or self._game_task.done():
+            self._game_task = asyncio.create_task(self._game_mode_loop())
+
         # Day 4/5: warm up Whisper + Silero in the background.
-        if self._voice is not None and config.VOICE_PRELOAD:
+        if self._voice is not None and config.VOICE_PRELOAD and not game_mode.active():
             asyncio.create_task(self._voice.preload())
 
     async def on_message(self, message: discord.Message) -> None:
@@ -352,9 +358,11 @@ class CompanionBot(discord.Client):
                 await self._memory.social._reload_names()
             except Exception:  # noqa: BLE001
                 pass
+            self._expire_advice()
+            if game_mode.active():
+                continue  # игровой режим: только отвечает, сама не пишет — модель на CPU мешала бы игре
             if config.PROACTIVE_USER_IDS:
                 await self._maybe_initiate_dms()
-            self._expire_advice()
             if config.PROACTIVE_FRIENDS:
                 try:
                     await self._maybe_write_to_friends()
@@ -370,6 +378,39 @@ class CompanionBot(discord.Client):
                         exc_info=True,
                     )
 
+    async def _game_mode_loop(self) -> None:
+        """
+        aura.bat → G кладёт/убирает data/game_mode.flag.  При переключении: выйти из войса (или снова
+        прогрузить голос) и сразу перезагрузить модель в новом виде — видеопамять игре нужна сейчас,
+        а не к первому сообщению.
+        """
+        await self.wait_until_ready()
+        was = game_mode.active()
+        if was:
+            _logger.info("Game mode is on — chat only", extra={"data": {
+                "gpu_layers": config.GAME_MODE_GPU_LAYERS, "threads": config.GAME_MODE_THREADS}})
+        while not self.is_closed():
+            await asyncio.sleep(3)
+            now = game_mode.active()
+            if now == was:
+                continue
+            was = now
+            try:
+                if now:
+                    _logger.info("Game mode on — chat only, model partly on CPU", extra={"data": {
+                        "gpu_layers": config.GAME_MODE_GPU_LAYERS, "threads": config.GAME_MODE_THREADS}})
+                    if self._voice is not None:
+                        await self._voice.leave_all()
+                else:
+                    _logger.info("Game mode off", extra={"data": {}})
+                    if self._voice is not None and config.VOICE_PRELOAD:
+                        asyncio.create_task(self._voice.preload())
+                await self._pipeline.warmup(voice=False)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                _logger.error("Game mode switch failed", extra={"data": {"error": str(exc)}}, exc_info=True)
+
     async def _mind_loop(self) -> None:
         """
         «Осмысление» разговоров: когда в канале накопились реплики и стало
@@ -382,6 +423,8 @@ class CompanionBot(discord.Client):
             try:
                 if self._pipeline.busy or self._pipeline.seconds_since_last_request < 8:
                     continue
+                if game_mode.active():
+                    continue  # раздумья подождут конца игры: реплики копятся и не теряются
                 # Пока в войсе живой разговор — модель нужна для ответов, не для «раздумий».
                 # Сидит в войсе — тоже нет: раздумье держит модель ~1.5 мин, и первое «привет» ждало бы его.
                 if self._voice is not None and (
@@ -1182,6 +1225,8 @@ class CompanionBot(discord.Client):
 
                 if config.BIRTHDAYS_ENABLED and phase not in ("asleep",):
                     await self._maybe_congratulate()
+                if game_mode.active():
+                    continue  # события дня и чтение — модель; в игровом режиме она только в чате
                 if self._life is not None and phase != "asleep":
                     await self._maybe_life_event()
                 if self._library is not None and phase != "asleep":

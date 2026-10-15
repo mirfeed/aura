@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 import aiohttp
 
 import config
+from core import game_mode
 from utils.logger import get_logger
 from memory.images import ImageMemory, ago_text
 from pipeline.media import MediaPicker
@@ -313,6 +314,17 @@ def _ollama_stats(d: Dict[str, Any]) -> Dict[str, Any]:
 
 def _voice_model() -> str:
     return config.VOICE_OLLAMA_MODEL or config.OLLAMA_MODEL
+
+
+def _game_mode_payload(
+    payload: Dict[str, Any], timeout: Optional[float]
+) -> Tuple[Dict[str, Any], Optional[float]]:
+    """Игровой режим: модель частично на CPU (те же опции во всех запросах) — и ждать её дольше."""
+    extra = game_mode.ollama_options()
+    if not extra:
+        return payload, timeout
+    payload = {**payload, "options": {**(payload.get("options") or {}), **extra}}
+    return payload, (timeout or config.OLLAMA_TIMEOUT) * 3
 
 
 # Расшифровка речи самой Gemma (VOICE_HEARING=gemma).  Промпт нарочно без персонажа: в образе она путает
@@ -652,7 +664,8 @@ class TextPipeline:
             "options": self._options(),
         }
         url = f"{config.OLLAMA_BASE_URL}/api/chat"
-        tmo = aiohttp.ClientTimeout(total=config.OLLAMA_TIMEOUT)
+        payload, timeout = _game_mode_payload(payload, None)
+        tmo = aiohttp.ClientTimeout(total=timeout or config.OLLAMA_TIMEOUT)
         buf = ""
         stats: Dict[str, Any] = {}
         silent = False
@@ -825,7 +838,7 @@ class TextPipeline:
 
     async def _check_gpu_placement(self) -> None:
         """Проверить через /api/ps, целиком ли модель в видеопамяти (частично на CPU = очень медленно)."""
-        if getattr(self, "_gpu_checked", False):
+        if getattr(self, "_gpu_checked", False) or game_mode.active():  # в игровом режиме так и задумано
             return
         self._gpu_checked = True
         try:
@@ -1751,6 +1764,7 @@ class TextPipeline:
     ) -> Optional[Dict[str, Any]]:
         """POST to Ollama under the global lock.  Returns parsed JSON or None."""
         headers = {"Content-Type": "application/json; charset=utf-8"}
+        payload, timeout = _game_mode_payload(payload, timeout)
         tmo = aiohttp.ClientTimeout(total=timeout or config.OLLAMA_TIMEOUT)
         t0 = time.monotonic()
         async with _Hold(self._llm_lock, priority):
