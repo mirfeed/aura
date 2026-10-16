@@ -1001,14 +1001,19 @@ class MessageHandler:
         name = ctx.author_display_name
         try:
             if ctx.is_dm:
-                last = await social.last_line(ctx.channel_id)
-                if last is not None and last[1]:
-                    hours = (now - last[0]).total_seconds() / 3600
-                    if hours >= config.IGNORED_AFTER_HOURS:
+                lines = await social.last_lines(ctx.channel_id, 2)
+                if lines and lines[0][1]:
+                    at, _, text = lines[0]
+                    hours = (now - at).total_seconds() / 3600
+                    # «Висит без ответа» — только если ответ правда был нужен: вопрос или она сама начала
+                    # разговор.  Реакция на его же картинку («какой милый кролик!») ответа не ждёт — иначе
+                    # модель додумывала «я всё ещё жду ответа на мой вопрос», которого не было.
+                    started = len(lines) < 2 or lines[1][1] or (at - lines[1][0]).total_seconds() > 6 * 3600
+                    if hours >= config.IGNORED_AFTER_HOURS and ("?" in text or started):
                         when = f"{int(hours)} ч назад" if hours < 48 else f"{int(hours // 24)} дн назад"
-                        return (f"ты писала {name} {when}, и он(а) так и не ответил(а) — можешь мимоходом, "
-                                "по-доброму подколоть за это одной фразой («о, вспомнил(а) про меня»), "
-                                "но не дуйся и не упрекай всерьёз")
+                        return (f"ты писала {name} {when}: «{text[:150]}» — и он(а) так и не ответил(а); можешь "
+                                "мимоходом, по-доброму подколоть за это одной фразой («о, вспомнил(а) про меня»), "
+                                "но не дуйся, не упрекай всерьёз и не приписывай себе вопросов, которых не было")
             seen = await social.last_seen(ctx.author_id)
             if seen is not None:
                 days = (now - seen).total_seconds() / 86400

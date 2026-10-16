@@ -1127,6 +1127,14 @@ class SocialMemory:
             row = await cur.fetchone()
         return (_parse_ts(row["ts"]), bool(row["is_bot"])) if row else None
 
+    async def last_lines(self, channel_id: int, n: int = 2) -> List[Tuple[datetime, bool, str]]:
+        """Последние *n* записей канала, новые первыми: (когда, её ли это реплика, текст)."""
+        async with self._db.execute(
+            "SELECT ts, is_bot, text FROM transcript WHERE channel_id = ? ORDER BY id DESC LIMIT ?", (channel_id, n)
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(_parse_ts(r["ts"]), bool(r["is_bot"]), r["text"] or "") for r in rows]
+
     async def last_bot_line_at(self, channel_id: int) -> Optional[datetime]:
         async with self._db.execute(
             "SELECT ts FROM transcript WHERE channel_id = ? AND is_bot = 1 ORDER BY id DESC LIMIT 1", (channel_id,)
