@@ -226,6 +226,8 @@ class MessageContext:
     affinity: float = 0.0
     # Провокация / рейдж-байт (оскорбления, «твою мать…», политота) — отвечает иначе или игнорит.
     provocation: bool = False
+    # В этом ответе проявить интерес к собеседнику — спросить после ответа (pipeline.text.choose_length).
+    curious: bool = False
     # Display name of the person whose message this one replies to.
     reply_to_name: Optional[str] = None
     # Other recent chat participants: (anonymised key, display name, raw id).

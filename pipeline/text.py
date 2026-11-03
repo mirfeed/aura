@@ -137,9 +137,15 @@ def _trim_chat(text: str, max_sentences: int, max_len: int, cut: bool = False) -
         return text.strip()
     if cut and len(sents) > 1:
         sents.pop()
+    dropped = sents[max(1, max_sentences):]
     sents = sents[:max(1, max_sentences)]
     while len(sents) > 1 and sum(len(p) + 1 for _, p in sents) > max_len:
-        sents.pop()
+        dropped.insert(0, sents.pop())
+    # Встречный вопрос после ответа не отрезаем — иначе от «ответила и спросила» остаётся только ответ,
+    # и разговор держится на одном собеседнике.
+    question = next((s for s in dropped if s[1].rstrip().endswith("?") and len(s[1]) <= 140), None)
+    if question is not None and not any("?" in p for _, p in sents):
+        sents.append(question)
     if len(sents) == 1 and len(sents[0][1]) > max_len * 1.5:
         head = sents[0][1][: int(max_len * 1.5)]
         head = head[: head.rfind(" ")] if " " in head else head
@@ -285,7 +291,44 @@ def choose_length(context: "MessageContext") -> str:
         # В войсе коротко: длинная фраза = долгое ожидание первого звука.
         weights = {"tiny": 30, "short": 50, "normal": 20}
     keys = list(weights)
-    return random.choices(keys, weights=[weights[k] for k in keys])[0]
+    length = random.choices(keys, weights=[weights[k] for k in keys])[0]
+    # Заодно решаем, проявит ли она интерес (вопрос после ответа) — на него нужно место.
+    context.curious = _wants_curiosity(context)
+    if context.curious and length == "tiny":
+        length = "short"
+    return length
+
+
+_FAREWELL_RE = re.compile(
+    r"\b(?:пока|спокойной|споки|сладких|до завтра|до встречи|бб|бай|я спать|пойду спать|иду спать|"
+    r"отойду|ушёл|ушла|афк|позже напишу)\b", re.I)
+
+_CURIOSITY_HINTS = [
+    "после ответа задай {name} один живой вопрос про то, что он(а) сейчас рассказал(а): подробность, "
+    "как это было, что он(а) сам(а) об этом думает",
+    "после ответа спроси {name} о нём (о ней) самом(ой): вспомни что-то из того, что знаешь о нём (о ней) "
+    "(блок «Люди») — как там с этим сейчас, чем закончилось",
+    "поделись своим — мнением или похожим случаем у тебя — и спроси, как с этим у {name}",
+]
+
+
+def _wants_curiosity(context: "MessageContext") -> bool:
+    """
+    Живой собеседник не только отвечает — иногда сам интересуется.  Не каждый раз (иначе допрос),
+    не после прощаний, не с неприятными людьми и не если её прошлая реплика и так была вопросом.
+    """
+    if getattr(context, "provocation", False) or getattr(context, "affinity", 0.0) <= -0.25:
+        return False
+    if _FAREWELL_RE.search(context.content or ""):
+        return False
+    for line in reversed(context.recent_channel_history or []):
+        line = re.sub(r"^\[[^\]]*\]\s*", "", line)
+        if line.startswith(config.BOT_NAME):
+            if "?" in line:
+                return False
+            break
+    chance = config.CURIOSITY_DM if getattr(context, "is_dm", False) else config.CURIOSITY_CHAT
+    return random.random() < chance
 
 
 # Приоритеты очереди к модели: голос важнее чата, чат важнее «рефлексии».
@@ -2020,6 +2063,12 @@ class TextPipeline:
                 "равнодушно («мда», «скучно», «ну и?», «ору, гений»), высмей или пошли — мат можно, "
                 "но без ответных оскорблений родни. На политоту: «не, в политику я не лезу» или «давай без этого». "
                 "Если это уже не первый вброс от него — можно просто «всё, я тебя не слушаю»."
+            )
+        if getattr(context, "curious", False):
+            hint = random.choice(_CURIOSITY_HINTS).format(name=context.author_display_name)
+            now_rules.append(
+                f"Сейчас ты не просто отвечаешь, а сама интересуешься: {hint}. Сначала ответ, вопрос — в конце, "
+                "один. Конкретный и по теме, без дежурных «а у тебя как?» и «чем занимаешься?»."
             )
         if recent_own:
             now_rules.append("Не повторяй свои недавние фразы и обороты: " + " | ".join(f"«{r[:80]}»" for r in recent_own))

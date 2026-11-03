@@ -544,6 +544,10 @@ BOOK_MAX_MB: float = _get_float("BOOK_MAX_MB", 50.0)
 MISS_AFTER_DAYS: float = _get_float("MISS_AFTER_DAYS", 4.0)
 # Её сообщение в личке висит без ответа столько часов — слегка, по-доброму подколет за это.
 IGNORED_AFTER_HOURS: float = _get_float("IGNORED_AFTER_HOURS", 12.0)
+# Как часто она сама чем-то интересуется — после ответа задаёт вопрос (про сказанное, про человека,
+# делится своим и спрашивает в ответ).  Не после прощаний и не два вопроса подряд.
+CURIOSITY_DM: float = _get_float("CURIOSITY_DM", 0.45)      # в личке
+CURIOSITY_CHAT: float = _get_float("CURIOSITY_CHAT", 0.3)   # в общем чате и в войсе
 
 # Дни рождения: узнаёт даты из разговоров и в свой день поздравляет в личке.
 BIRTHDAYS_ENABLED: bool = _get_bool("BIRTHDAYS_ENABLED", True)
