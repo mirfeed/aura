@@ -91,6 +91,11 @@ _SENT_CLAIM_RE = re.compile(
     re.IGNORECASE)
 
 
+def _as_file(item: Any) -> discord.File:
+    """Путь к картинке из её коллекции или уже готовый discord.File (пересылаемое вложение)."""
+    return item if isinstance(item, discord.File) else discord.File(str(item))
+
+
 def _false_send_claim(text: str) -> bool:
     """Утверждает, что отправила/отправит.  «не отправила», «ничего не скинула» — честно, не в счёт."""
     for m in _SENT_CLAIM_RE.finditer(text or ""):
@@ -1202,11 +1207,11 @@ class MessageHandler:
                     await asyncio.sleep(random.uniform(0.8, 2.0) if chunks or i else 0.5)
                     if not chunks and i == 0 and reply_to is not None:
                         try:
-                            await reply_to.reply(file=discord.File(str(path)), mention_author=False)
+                            await reply_to.reply(file=_as_file(path), mention_author=False)
                             continue
                         except discord.HTTPException:
                             pass
-                    await channel.send(file=discord.File(str(path)))
+                    await channel.send(file=_as_file(path))
         except discord.Forbidden:
             _logger.warning(
                 "Missing permissions to send message",

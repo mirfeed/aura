@@ -1535,14 +1535,17 @@ class TextPipeline:
 
     async def relay_text(self, target: "MessageContext", requester: str, what: str, request: str = "",
                          anonymous: bool = False, own_words: bool = False,
-                         media: Optional[List[Any]] = None) -> str:
+                         media: Optional[List[Any]] = None, forwarded: int = 0) -> str:
         """
         Её сообщение человеку по просьбе *requester*.  Просят поделиться картинкой («скинь ей свой любимый
         арт») и передан *media* — туда кладётся файл из её коллекции (иначе писала «вот арт» без арта).
         *own_words* — просили рассказать что-то своё («расскажи Даше, что ты читаешь»): она рассказывает
         сама, а не «X просил передать: …», будто это цитата.
         """
-        fallback = what if anonymous or own_words else f"{requester} просил(а) передать: {what}"
+        if forwarded and not what:
+            fallback = "держи" if anonymous else f"{requester} просил(а) скинуть тебе это"
+        else:
+            fallback = what if anonymous or own_words else f"{requester} просил(а) передать: {what}"
         try:
             if own_words and not target.content:
                 target.content = request or what  # чтобы в промпт попало то, о чём рассказывать (например, книга)
@@ -1565,12 +1568,19 @@ class TextPipeline:
             else:
                 user = head + (
                     f"{requester} попросил(а) тебя написать {target.author_display_name}. Его(её) просьба дословно: "
-                    f"«{request or what}». Суть: {what}.\n"
-                    "Напиши это в личку своими словами, точно по смыслу просьбы — ничего не выдумывай и не меняй; "
+                    f"«{request or what}». Суть: {what or '(слов нет — только переслать вложение)'}.\n"
+                    + ("Напиши это в личку своими словами, точно по смыслу просьбы — ничего не выдумывай и не меняй; "
+                       if what else "Слов передавать не нужно — ты просто пересылаешь вложение. ")
                     + ("пиши как будто сама решила — НЕ упоминай, что тебя кто-то попросил, и не называй "
                        f"{requester}. " if anonymous else
                        f"скажи, что это от {requester} (имя пиши именно так). ")
                     + "Коротко, одно-два предложения."
+                    # Вложение — отдельной строкой в конце: в середине просьбы модель путала, кто кому что говорит.
+                    + (f"\n(К твоему сообщению приложится то, что прислал(а) {requester}: "
+                       f"{'вложение' if forwarded == 1 else f'{forwarded} вложения'} — картинка, скрин или файл. "
+                       "Что там — не описывай и не додумывай"
+                       + ("; можно мимоходом: «и скрин скидываю»)" if what else ".)")
+                       if forwarded else "")
                 )
             share = (media is not None and self._media is not None
                      and (MediaPicker.asked(request) or MediaPicker.asked(what)))
@@ -1589,6 +1599,9 @@ class TextPipeline:
                     "ref": wanted[0] if wanted else None, "relay": True, "file": path.name if path else None}})
             # «normal» — до двух предложений, как и просим: «short» оставлял одно, и от «Даш, привет! …» оставалось
             # только «Даш, привет!».
+            if forwarded:  # «от MirFeeD для тебя [вложение]» — плейсхолдер вместо самого вложения
+                raw = re.sub(r"\s*[\[(](?:вложени|скрин|картинк|файл|фото|изображени)[^\])\n]{0,40}[\])]", "", raw,
+                             flags=re.I)
             text = self._post_process(raw, target, "long" if own_words else "normal") if raw.strip() else ""
             return text or fallback
         except Exception:  # noqa: BLE001

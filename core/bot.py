@@ -52,6 +52,10 @@ _RELAY_PRONOUNS = {"им", "всем", "они", "них", "ним", "ему", "
 _VAGUE_WHAT_RE = _re.compile(r"^\s*(?:(?:мо[её]|то|это|тот|та|мой)\s+)?(?:сообщени\w*|текст|то|это)?\s*(?:про|о|об|насч[её]т)\b"
                              r"|^\s*(?:мо[её]|то|это)\s+сообщени\w*\s*$", _re.IGNORECASE)
 
+# «перешли это / скрин / фотку» — переслать вложение из его недавнего сообщения.
+_FORWARD_THIS_RE = _re.compile(r"(?<![\wё])(?:это|эту|этот|эти|скрин\w*|фот\w*|картинк\w*|пикч\w*|видос\w*|"
+                               r"видео|файл\w*|мем\w*|гифк\w*)(?![\wё])", _re.IGNORECASE)
+
 _RELAY_WORDS = _re.compile(
     r"\b(?:напиши|передай|скажи|отправь|отправить|отправишь|черкни|маякни|спроси|скинь|скинуть|перешли|"
     r"переслать|разошли|разослать)\b", _re.IGNORECASE)
@@ -745,6 +749,35 @@ class CompanionBot(discord.Client):
         _logger.info("Asked for advice", extra={"data": {"advisor_id": uid, "target_id": target.id}})
         return True
 
+    @staticmethod
+    def _words_beyond_request(what: str, names: Any) -> int:
+        """Сколько смысла в «что передать» без «передай / это / скрин» и имён: «передай паше» → 0."""
+        rest = _FORWARD_THIS_RE.sub(" ", _RELAY_WORDS.sub(" ", what or ""))
+        for name in names:
+            stem = (name or "").strip().lower()[:3]
+            if len(stem) >= 3:
+                rest = _re.sub(rf"(?<![\wё]){_re.escape(stem)}[\wё]*", " ", rest, flags=_re.IGNORECASE)
+        return len(_re.sub(r"[\s,.!?:;«»'-]+", "", rest))
+
+    async def _forwardable(self, message: discord.Message) -> List[Any]:
+        """
+        Вложения, которые просят переслать: из самой просьбы, а если в ней нет, но сказано «перешли это /
+        скрин» — из его последнего сообщения с вложением в этом чате (не старше 10 минут).
+        """
+        if message.attachments:
+            return list(message.attachments)[:4]
+        if not _FORWARD_THIS_RE.search(message.content or ""):
+            return []
+        try:
+            async for m in message.channel.history(limit=8, before=message):
+                if (message.created_at - m.created_at).total_seconds() > 600:
+                    break
+                if m.author.id == message.author.id and m.attachments:
+                    return list(m.attachments)[:4]
+        except discord.HTTPException:
+            pass
+        return []
+
     async def _relay_request(self, message: discord.Message, ctx: Any) -> str:
         """
         «Аура, напиши Паше и Даше, что …».  Выполняет, если доверяет просящему (RELAY_TRUST_MIN).
@@ -759,6 +792,8 @@ class CompanionBot(discord.Client):
             return ""
         now = datetime.now(tz=timezone.utc)
         text_in = message.content or ""
+        # Что переслать как есть: вложения этой просьбы или его недавнего сообщения («перешли это»).
+        files: List[Any] = await self._forwardable(message)
         anonymous = False
         own_words = False  # «расскажи ей, что ты читаешь» — рассказать от себя, а не передать чужие слова
         others = [m for m in message.mentions if not m.bot and m.id not in (self.user.id, message.author.id)]
@@ -784,6 +819,7 @@ class CompanionBot(discord.Client):
                             others.append(type("M", (), {"id": hit[0], "display_name": hit[1]})())
             if others or found_keys:
                 what, request = pending["message"], pending["request"]
+                files = files or list(pending.get("files") or [])
                 # Могли заодно уточнить, что передать («им надо скинуть про печеньку»).
                 reparsed = await self._pipeline.parse_relay(message.author.display_name, text_in,
                                                             ctx.recent_channel_history)
@@ -826,8 +862,10 @@ class CompanionBot(discord.Client):
                 last = None
             if last is not None:
                 # «скинь им ещё раз», «ты про печеньку не отправила» — что и кому, берём из прошлой просьбы.
-                if _VAGUE_WHAT_RE.search(what) or len(what) < 6:
+                if (_VAGUE_WHAT_RE.search(what) or len(what) < 6) and not files:
+                    # (с вложением «передай паше» — это про вложение, а не повтор прошлого сообщения)
                     what, request = last["what"], last["request"]
+                    files = list(last.get("files") or [])
                 if not names and not others:
                     names = list(last["names"])
             for m in others:
@@ -849,7 +887,7 @@ class CompanionBot(discord.Client):
         targets.pop(self.user.id, None)
         if what and not _VAGUE_WHAT_RE.search(what):
             self._relay_last[message.author.id] = {
-                "what": what, "request": request, "at": now,
+                "what": what, "request": request, "at": now, "files": files,
                 "names": list(targets.values()) + unknown,
             }
 
@@ -871,11 +909,22 @@ class CompanionBot(discord.Client):
                 tctx = await self._initiator_context(target, dm)
                 tctx.recent_channel_history = await self._dm_history(dm, 6)
                 pics: List[Any] = []
-                text = await self._pipeline.relay_text(tctx, message.author.display_name, what, request,
-                                                       anonymous=anonymous, own_words=own_words, media=pics)
-                await self._message_handler._send_with_typing(dm, text, random.uniform(1.0, 2.5), media=pics)
-                await self._memory.log_bot_reply(tctx, text)
-                sent.append(f"{name}: «{text}»" + (" (и картинку из своей коллекции)" if pics else ""))
+                bare = bool(files) and self._words_beyond_request(what, targets.values()) < 6
+                text = await self._pipeline.relay_text(tctx, message.author.display_name,
+                                                       "" if files and bare else what, request,
+                                                       anonymous=anonymous, own_words=own_words, media=pics,
+                                                       forwarded=len(files))
+                out = pics + [await a.to_file() for a in files]
+                await self._message_handler._send_with_typing(dm, text, random.uniform(1.0, 2.5), media=out)
+                if files:
+                    text_log = (text + f" [переслала от {message.author.display_name}: "
+                                + ", ".join(a.filename for a in files) + "]").strip()
+                else:
+                    text_log = text
+                await self._memory.log_bot_reply(tctx, text_log)
+                sent.append(f"{name}: «{text}»" + (" (и картинку из своей коллекции)" if pics else "")
+                            + (f" и переслала то, что прислал(а) {message.author.display_name} "
+                               f"({len(files)} вложение)" if files else ""))
                 self._relay_history.setdefault(message.author.id, []).append((now, name, text))
                 recent.append((now, uid))
                 if uid in learned:
@@ -889,7 +938,7 @@ class CompanionBot(discord.Client):
 
         if unknown:
             self._pending_relay[message.author.id] = {
-                "unknown": unknown, "message": what, "request": request, "at": now, "tries": 0,
+                "unknown": unknown, "message": what, "request": request, "at": now, "tries": 0, "files": files,
                 "anonymous": anonymous, "own_words": own_words,
             }
             self._message_handler.relay_pending_ids.add(message.author.id)
