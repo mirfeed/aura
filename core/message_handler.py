@@ -305,8 +305,28 @@ class MessageHandler:
         self._last_chat_advice: float = 0.0
         self._bait_log: Dict[int, List[float]] = {}
         # Долгая задержка (зачиталась): сообщения, накопившиеся от того же человека, пока она «не видит».
-        # channel_id → {"author": id, "messages": [Message], "notes": [str]}
-        self._pending_batch: Dict[int, Dict[str, Any]] = {}
+        # (channel_id, author_id) → {"messages": [Message], "notes": [str], "last_at": monotonic, ...}
+        # Заодно и обычная пауза: человек пишет очередью — ждёт, пока допишет, и отвечает разом.
+        self._pending_batch: Dict[Tuple[int, int], Dict[str, Any]] = {}
+        # Она уже пишет ответ этому человеку: что он успел дописать за это время.
+        self._inflight: Dict[Tuple[int, int], Dict[str, Any]] = {}
+        # Когда человек последний раз «печатал…» (событие Discord), monotonic.
+        self._typing_at: Dict[Tuple[int, int], float] = {}
+
+    def note_typing(self, channel_id: int, user_id: int) -> None:
+        """Discord: человек печатает — она подождёт, пока он допишет."""
+        self._typing_at[(channel_id, user_id)] = time.monotonic()
+
+    async def _wait_quiet(self, key: Tuple[int, int], pend: Dict[str, Any]) -> None:
+        """Ждёт, пока человек допишет: пауза после последнего сообщения и он больше не печатает."""
+        deadline = time.monotonic() + config.CHAT_BATCH_MAX_WAIT_S
+        while time.monotonic() < deadline and not pend.get("pinged"):
+            now = time.monotonic()
+            typing = self._typing_at.get(key, 0.0)
+            still_typing = typing > pend["last_at"] and now - typing < 10.0  # «печатает…» держится ~10 с
+            if now - pend["last_at"] >= config.CHAT_BATCH_QUIET_S and not still_typing:
+                return
+            await asyncio.sleep(0.5)
 
     def _channel_lock(self, channel: Any) -> asyncio.Lock:
         """Замок на отправку в канал: ответы уходят по очереди, а не вперемешку."""
@@ -316,7 +336,8 @@ class MessageHandler:
             lock = self._send_locks[key] = asyncio.Lock()
         return lock
 
-    async def handle(self, message: discord.Message, late_note: str = "", force_reply: bool = False) -> None:
+    async def handle(self, message: discord.Message, late_note: str = "", force_reply: bool = False,
+                     _followup: Optional[List[discord.Message]] = None) -> None:
         """
         Process a single incoming Discord message end-to-end.
 
@@ -328,6 +349,9 @@ class MessageHandler:
             Пометка модели к этому ответу (запоздалая личка, совет близкого и т.п.).
         force_reply:
             Ответить обязательно, без проверок (решение уже принято — например, после совета).
+        _followup:
+            Сообщения, которые человек дописал, пока она отправляла прошлый ответ (уже записаны
+            в ленту), — ответить на них одним сообщением.
         """
         # Спит — ничего не читает.  Личку разберёт, когда проснётся (CompanionBot._catch_up_dms),
         # поэтому в память её сейчас не пишем — иначе она будет считаться прочитанной.
@@ -339,6 +363,8 @@ class MessageHandler:
         # Build context (including channel history).
         ctx = await self._build_context(message)
         ctx.late_note = late_note
+        if _followup:  # контекст — от первого из дописанных; вложения остальных добавит склейка ниже
+            ctx.content = "\n".join(m.content for m in _followup if m.content)
 
         log_message_received(
             message_id=ctx.message_id,
@@ -351,10 +377,11 @@ class MessageHandler:
 
         social = self._memory.social
         # До записи этой реплики: давно ли человек пропадал, не висит ли её сообщение без ответа.
-        absence = await self._absence_note(ctx)
-        if absence:
-            ctx.late_note = (ctx.late_note + "; " if ctx.late_note else "") + absence
-        await self._memory.note_incoming(ctx)
+        if not _followup:  # дописанное уже записано в ленту, пока она отвечала
+            absence = await self._absence_note(ctx)
+            if absence:
+                ctx.late_note = (ctx.late_note + "; " if ctx.late_note else "") + absence
+            await self._memory.note_incoming(ctx)
 
         # «Аура, забудь обо мне».
         if self._is_addressed(message, ctx) and _FORGET_RE.search(ctx.content):
@@ -541,9 +568,19 @@ class MessageHandler:
             # (в личке relevance тег не считает — проверяем упоминание напрямую)
             pinged = bool(result.breakdown.keys() & {"direct_mention", "reply_to_bot"}) or any(
                 m.id == self._bot_user_id for m in message.mentions)
-            pend = self._pending_batch.get(ctx.channel_id)
-            if pend is not None and pend["author"] == message.author.id and not force_reply:
+            key = (ctx.channel_id, message.author.id)
+            flight = self._inflight.get(key)
+            if flight is not None and not force_reply and not _followup and time.monotonic() - flight["since"] < 180:
+                # Она уже пишет ему ответ — дописанное войдёт в него (или в следующий, одним сообщением).
+                flight["messages"].append(message)
+                _logger.info("Message joined reply in progress", extra={"data": {
+                    "message_id": message.id, "joined": len(flight["messages"])}})
+                await self._memory.log_event(ctx, bot_replied=False)
+                return
+            pend = self._pending_batch.get(key)
+            if pend is not None and not force_reply and not _followup:
                 pend["messages"].append(message)
+                pend["last_at"] = time.monotonic()
                 if ctx.late_note:
                     pend["notes"].append(ctx.late_note)
                 if pinged:
@@ -559,23 +596,26 @@ class MessageHandler:
                 decision.delay_seconds = random.uniform(2.0, 8.0)  # пришло уведомление — глянула сразу
                 ctx.late_note = (ctx.late_note + "; " if ctx.late_note else "") + (
                     "ты читала, но тебя тегнули — уведомление выдернуло тебя из книги")
-            if decision.delay_seconds > 0:
+            batching = not force_reply  # и для «дописанного»: вдруг он пишет дальше
+            if decision.delay_seconds > 0 or batching:
                 long_wait = decision.delay_seconds >= 15
-                if long_wait:
-                    self._pending_batch[ctx.channel_id] = {"author": message.author.id, "messages": [message],
-                                                           "notes": [], "wake": asyncio.Event(), "pinged": False}
+                if batching:
+                    self._pending_batch[key] = {"messages": list(_followup or [message]), "notes": [], "wake": asyncio.Event(),
+                                                "pinged": False, "last_at": time.monotonic()}
                 try:
-                    if long_wait:
+                    if long_wait and batching:
                         try:  # ждёт, пока сама не оторвётся от книги или не придёт уведомление (тег)
-                            await asyncio.wait_for(self._pending_batch[ctx.channel_id]["wake"].wait(),
+                            await asyncio.wait_for(self._pending_batch[key]["wake"].wait(),
                                                    timeout=decision.delay_seconds)
                         except asyncio.TimeoutError:
                             pass
-                    else:
+                    elif decision.delay_seconds > 0:
                         await asyncio.sleep(decision.delay_seconds)
+                    if batching:
+                        await self._wait_quiet(key, self._pending_batch[key])  # пусть допишет
                 finally:
-                    pend = self._pending_batch.pop(ctx.channel_id, None) if long_wait else None
-                if pend is not None and pend.get("pinged") and len(pend["messages"]) == 1:
+                    pend = self._pending_batch.pop(key, None) if batching else None
+                if long_wait and pend is not None and pend.get("pinged") and len(pend["messages"]) == 1:
                     ctx.late_note = (ctx.late_note + "; " if ctx.late_note else "") + (
                         "ты читала, но тебя тегнули — уведомление выдернуло тебя из книги")
                 if pend is not None and len(pend["messages"]) > 1:
@@ -585,89 +625,115 @@ class MessageHandler:
                     for m in msgs[1:]:
                         ctx.attachments += [a.url for a in m.attachments]
                     notes = [n for n in pend["notes"] if n]
-                    notes.append(f"пока ты читала, {ctx.author_display_name} написал(а) тебе несколько сообщений "
-                                 "подряд (они все выше, в «Новом сообщении») — ответь на всё сразу, одним ответом"
+                    notes.append((f"пока ты читала, {ctx.author_display_name} написал(а)" if long_wait else
+                                  f"{ctx.author_display_name} написал(а)")
+                                 + " тебе несколько сообщений подряд (они все в «Новом сообщении») — ответь на всё "
+                                 "сразу, одним сообщением, как в живой переписке, а не по пунктам"
                                  + ("; от книги тебя оторвало уведомление — тебя тегнули" if pend.get("pinged") else ""))
                     ctx.late_note = "; ".join(([ctx.late_note] if ctx.late_note else []) + notes)
                     message = msgs[-1]
                     _logger.info("Batched reply", extra={"data": {"messages": len(msgs)}})
 
-            # If extended reasoning is active — add a 🤔 reaction so the
-            # user sees the bot is "thinking".  Removed once the reply lands.
-            if ctx.use_thinking:
-                try:
-                    await message.add_reaction("🤔")
-                except (discord.Forbidden, discord.HTTPException):
-                    pass
+            self._inflight[key] = {"messages": [], "since": time.monotonic()}
+            try:
+                # If extended reasoning is active — add a 🤔 reaction so the
+                # user sees the bot is "thinking".  Removed once the reply lands.
+                if ctx.use_thinking:
+                    try:
+                        await message.add_reaction("🤔")
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
 
-            # Generate reply text.
-            gen_started = time.monotonic()
-            search_seconds = 0.0
-            # Нужно загуглить, чтобы ответить по делу?
-            # Вспомнила прочитанное — про это не гуглит (и не спойлерит себе книгу).
-            if config.WEB_SEARCH_ENABLED and not ctx.is_voice and not ctx.book_memories:
-                try:
-                    query = await self._pipeline.search_query(ctx)
-                    if query:
-                        ctx.web_query = query
-                        ctx.web_results = await self._pipeline.web_lookup(query)
-                except Exception as exc:  # noqa: BLE001
-                    _logger.warning("web search failed", extra={"data": {"error": str(exc)}})
-                search_seconds = time.monotonic() - gen_started
-            self._pipeline.last_stats = {}
-            response = await self._pipeline.generate(ctx)
-            if not relay_sent and not ctx.outgoing_media and _false_send_claim(response):
-                # Говорит «отправила» / «сейчас отправлю», хотя в этот раз ничего не ушло, —
-                # отправлять «потом» она не умеет, так что это враньё.  Переписать ответ.
-                _logger.warning("False send claim — regenerating", extra={"data": {"draft": response[:120]}})
-                ctx.late_note = (ctx.late_note + "; " if ctx.late_note else "") + (
-                    "ВАЖНО: в этот раз ты НИКОМУ ничего не отправила и не можешь отправить «потом» или «сейчас» "
-                    "сама по себе. Нельзя писать «отправила», «скинула», «сейчас отправлю», «разошлю». Если просят "
-                    "переслать — честно скажи, что не отправила, и попроси написать в одном сообщении, кому "
-                    "(ники или юзернеймы в Discord) и что именно передать")
+                # Generate reply text.
+                gen_started = time.monotonic()
+                search_seconds = 0.0
+                # Нужно загуглить, чтобы ответить по делу?
+                # Вспомнила прочитанное — про это не гуглит (и не спойлерит себе книгу).
+                if config.WEB_SEARCH_ENABLED and not ctx.is_voice and not ctx.book_memories:
+                    try:
+                        query = await self._pipeline.search_query(ctx)
+                        if query:
+                            ctx.web_query = query
+                            ctx.web_results = await self._pipeline.web_lookup(query)
+                    except Exception as exc:  # noqa: BLE001
+                        _logger.warning("web search failed", extra={"data": {"error": str(exc)}})
+                    search_seconds = time.monotonic() - gen_started
+                self._pipeline.last_stats = {}
                 response = await self._pipeline.generate(ctx)
-                if _false_send_claim(response):
-                    response = "блин, ничего не ушло. напиши одним сообщением, кому (ники или юзернеймы в Discord) и что передать — перешлю"
-            gen_seconds = time.monotonic() - gen_started
+                if not relay_sent and not ctx.outgoing_media and _false_send_claim(response):
+                    # Говорит «отправила» / «сейчас отправлю», хотя в этот раз ничего не ушло, —
+                    # отправлять «потом» она не умеет, так что это враньё.  Переписать ответ.
+                    _logger.warning("False send claim — regenerating", extra={"data": {"draft": response[:120]}})
+                    ctx.late_note = (ctx.late_note + "; " if ctx.late_note else "") + (
+                        "ВАЖНО: в этот раз ты НИКОМУ ничего не отправила и не можешь отправить «потом» или «сейчас» "
+                        "сама по себе. Нельзя писать «отправила», «скинула», «сейчас отправлю», «разошлю». Если просят "
+                        "переслать — честно скажи, что не отправила, и попроси написать в одном сообщении, кому "
+                        "(ники или юзернеймы в Discord) и что именно передать")
+                    response = await self._pipeline.generate(ctx)
+                    if _false_send_claim(response):
+                        response = "блин, ничего не ушло. напиши одним сообщением, кому (ники или юзернеймы в Discord) и что передать — перешлю"
+                # Пока она писала ответ, человек дописал ещё — ответить на всё сразу, а не на кусок.
+                more = self._inflight[key]["messages"]
+                if more and not relay_sent and not ctx.outgoing_media:
+                    self._inflight[key]["messages"] = []
+                    ctx.content = "\n".join([ctx.content] + [m.content for m in more if m.content])
+                    for m in more:
+                        ctx.attachments += [a.url for a in m.attachments]
+                    ctx.late_note = (ctx.late_note + "; " if ctx.late_note else "") + (
+                        f"пока ты писала ответ, {ctx.author_display_name} дописал(а) ещё (всё в «Новом сообщении») "
+                        "— ответь на всё сразу, одним сообщением")
+                    message = more[-1]
+                    _logger.info("Reply redone with new messages", extra={"data": {"added": len(more)}})
+                    response = await self._pipeline.generate(ctx)
+                gen_seconds = time.monotonic() - gen_started
 
-            # Remove the thinking reaction before sending the reply.
-            if ctx.use_thinking:
-                try:
-                    await message.remove_reaction("🤔", message.guild.me if message.guild else message.channel.me)
-                except (discord.Forbidden, discord.HTTPException, AttributeError):
-                    pass
+                # Remove the thinking reaction before sending the reply.
+                if ctx.use_thinking:
+                    try:
+                        await message.remove_reaction("🤔", message.guild.me if message.guild else message.channel.me)
+                    except (discord.Forbidden, discord.HTTPException, AttributeError):
+                        pass
 
-            # On guild channels — reply to the specific message (shows the
-            # reply arrow in Discord).  In DMs — just send normally.
-            send_started = time.monotonic()
-            await self._send_with_typing(
-                message.channel, response, decision.typing_duration,
-                reply_to=message if not ctx.is_dm else None,
-                already_waited=gen_seconds,
-                media=ctx.outgoing_media,
-            )
+                # On guild channels — reply to the specific message (shows the
+                # reply arrow in Discord).  In DMs — just send normally.
+                send_started = time.monotonic()
+                await self._send_with_typing(
+                    message.channel, response, decision.typing_duration,
+                    reply_to=message if not ctx.is_dm else None,
+                    already_waited=gen_seconds,
+                    media=ctx.outgoing_media,
+                )
 
-            if ctx.outgoing_media:
-                # Чтобы в истории/памяти она помнила, что кинула картинку.
-                response = (response + " [кинула картинку из своей коллекции]").strip()
-            await self._memory.log_bot_reply(ctx, response)
+                if ctx.outgoing_media:
+                    # Чтобы в истории/памяти она помнила, что кинула картинку.
+                    response = (response + " [кинула картинку из своей коллекции]").strip()
+                await self._memory.log_bot_reply(ctx, response)
 
-            if complain and self.advice_hook is not None:
-                self._last_chat_advice = time.monotonic()
-                asyncio.create_task(self.advice_hook(message, ctx, "complain", response))
+                if complain and self.advice_hook is not None:
+                    self._last_chat_advice = time.monotonic()
+                    asyncio.create_task(self.advice_hook(message, ctx, "complain", response))
 
-            log_reply_sent(
-                message_id=ctx.message_id,
-                channel_id=ctx.channel_id,
-                response_length=len(response),
-                search_seconds=round(search_seconds, 1),
-                llm_seconds=round(gen_seconds - search_seconds, 1),
-                typing_seconds=round(time.monotonic() - send_started, 1),
-                **getattr(self._pipeline, "last_stats", {}),
-            )
+                log_reply_sent(
+                    message_id=ctx.message_id,
+                    channel_id=ctx.channel_id,
+                    response_length=len(response),
+                    search_seconds=round(search_seconds, 1),
+                    llm_seconds=round(gen_seconds - search_seconds, 1),
+                    typing_seconds=round(time.monotonic() - send_started, 1),
+                    **getattr(self._pipeline, "last_stats", {}),
+                )
+                # Дописал, пока она уже печатала / отправляла, — ответ на это следом, одним сообщением.
+                left = self._inflight.pop(key, {}).get("messages", [])
+                if left:
+                    asyncio.create_task(self.handle(left[0], _followup=left, late_note=(
+                        f"{ctx.author_display_name} дописал(а) это, пока ты отвечала на прошлое (твой ответ уже "
+                        "в переписке выше) — ответь на новое, не повторяя сказанного")))
+            finally:
+                self._inflight.pop(key, None)
 
-        # Always log the event — whether or not we replied.
-        await self._memory.log_event(ctx, bot_replied=decision.should_reply)
+        # Always log the event — whether or not we replied.  (Дописанное уже записано, когда пришло.)
+        if not _followup:
+            await self._memory.log_event(ctx, bot_replied=decision.should_reply)
 
     async def catch_up(self, missed: List[discord.Message], reply: bool) -> None:
         """

@@ -549,6 +549,13 @@ IGNORED_AFTER_HOURS: float = _get_float("IGNORED_AFTER_HOURS", 12.0)
 CURIOSITY_DM: float = _get_float("CURIOSITY_DM", 0.45)      # в личке
 CURIOSITY_CHAT: float = _get_float("CURIOSITY_CHAT", 0.3)   # в общем чате и в войсе
 
+# Человек пишет очередью коротких сообщений — она ждёт, пока он допишет (пауза + «печатает…»),
+# и отвечает одним сообщением на всё.  Дописал, пока она отвечала, — учтёт и это.
+CHAT_BATCH_QUIET_S: float = _get_float("CHAT_BATCH_QUIET_S", 3.5)     # тишина после последнего сообщения
+CHAT_BATCH_MAX_WAIT_S: float = _get_float("CHAT_BATCH_MAX_WAIT_S", 25.0)  # но не дольше этого сверх задержки
+# Эмодзи и смайлики :) в её сообщениях (False — вычищаются).
+CHAT_EMOJI: bool = _get_bool("CHAT_EMOJI", False)
+
 # Дни рождения: узнаёт даты из разговоров и в свой день поздравляет в личке.
 BIRTHDAYS_ENABLED: bool = _get_bool("BIRTHDAYS_ENABLED", True)
 # Поздравляет тех, к кому относится не хуже этого (−10…10).

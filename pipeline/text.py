@@ -161,6 +161,19 @@ def _trim_chat(text: str, max_sentences: int, max_len: int, cut: bool = False) -
 _EMOJI_RE = re.compile("[\U0001F300-\U0001FAFF\u2600-\u27BF\u2728]\ufe0f?")
 
 
+# Текстовые смайлики «:)», «;D», «xD», «:-(» (скобочка «)» после слова — это не они, её оставляем).
+_EMOTICON_RE = re.compile(r"(?<![\w:])(?:[:;=8][-'^]?[)(DPpOo3*\]\[|/\\]+|[xX]D+)(?![\w])")
+
+
+def _strip_emoji(text: str) -> str:
+    """Без эмодзи и текстовых смайликов (их просили убрать) — пустой остаток → «ахах»."""
+    cleaned = _EMOTICON_RE.sub("", _EMOJI_RE.sub("", text)).replace("\u200d", "")
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r" +([,.!?…])", r"\1", cleaned)
+    cleaned = "\n".join(l.strip() for l in cleaned.splitlines() if l.strip())
+    return cleaned or "ахах"
+
+
 def _drop_repeated_emoji(text: str, context: "MessageContext") -> str:
     """Убирает эмодзи, если она ставила их в последних своих сообщениях — иначе 😏 в каждой реплике."""
     own = []
@@ -387,6 +400,48 @@ _ENGAGE_RULES = {
               "сказанного (свой случай, своё отношение, шутка) или переспроси, если неясно, о чём он(а). "
               + _NO_TRUISMS,
 }
+
+
+def _speaker_lines(context: "MessageContext", n: int = 3) -> List[str]:
+    """Последние реплики собеседника (вместе с текущей)."""
+    name = context.author_display_name or ""
+    out = [context.content or ""]
+    for line in reversed(context.recent_channel_history or []):
+        m = re.match(r"^(?:\[[^\]]*\]\s*)?([^:→]+?)\s*(?:→[^:]*)?:\s*(.*)$", line, re.S)
+        if m and m.group(1).strip() == name:
+            out.append(m.group(2))
+            if len(out) > n:
+                break
+    return out
+
+
+def _writes_english(context: "MessageContext") -> bool:
+    """Собеседник пишет по-английски (а не по-русски) — отвечать ему тоже по-английски."""
+    text = " ".join(_speaker_lines(context))
+    lat = len(re.findall(r"[a-zA-Z]", text))
+    cyr = len(re.findall(r"[а-яА-ЯёЁ]", text))
+    return lat >= 6 and lat > 4 * cyr
+
+
+_STOP_WORDS = set(
+    "это этот эта эти тоже просто когда если тогда потом очень может можно только ещё еще меня тебя тебе "
+    "себя него неё нее него ними чтобы потому какой какая какие такой такая такие типа вообще сейчас уже "
+    "there that this with your what just have about they them then when like really".split())
+
+
+def _overused_words(context: "MessageContext") -> List[str]:
+    """Её словечки, которые уже были в двух и больше из последних реплик («официально», «реально»)."""
+    own = []
+    for line in context.recent_channel_history or []:
+        stripped = re.sub(r"^\[[^\]]*\]\s*", "", line)
+        if stripped.startswith(config.BOT_NAME) and ":" in stripped:
+            own.append(stripped.split(":", 1)[1].lower())
+    counts: Dict[str, int] = {}
+    for line in own[-8:]:
+        for w in set(re.findall(r"[а-яёa-z]{4,}", line)):
+            if w not in _STOP_WORDS:
+                counts[w] = counts.get(w, 0) + 1
+    return [w for w, c in sorted(counts.items(), key=lambda kv: -kv[1]) if c >= 2][:8]
 
 
 def _wants_curiosity(context: "MessageContext") -> bool:
@@ -2170,8 +2225,18 @@ class TextPipeline:
                 "один. Конкретный и про то, о чём сейчас говорит человек (если он рассказал о себе — про это), "
                 "без дежурных «а у тебя как?» и «чем занимаешься?» и без смены темы."
             )
+        if not context.is_voice and _writes_english(context):
+            now_rules.append(
+                f"{context.author_display_name} пишет по-английски — отвечай по-английски, без русских слов: "
+                "простым разговорным английским, как в переписке (строчными, коротко; сокращения вроде u, rn, "
+                "tbh, idk, ngl, lol — изредка, не в каждой фразе)."
+            )
         if recent_own:
             now_rules.append("Не повторяй свои недавние фразы и обороты: " + " | ".join(f"«{r[:80]}»" for r in recent_own))
+        worn = _overused_words(context)
+        if worn:
+            now_rules.append("Эти словечки ты уже затёрла — в этом ответе их не используй: "
+                             + ", ".join(f"«{w}»" for w in worn) + ".")
         dynamic.append("\n".join(now_rules))
         return "\n\n".join(stable + dynamic)
 
@@ -2327,7 +2392,7 @@ class TextPipeline:
         if context.is_voice:
             text = strip_voice_tics(text) or text
         elif "```" not in text:
-            text = _drop_repeated_emoji(text, context)
+            text = _drop_repeated_emoji(text, context) if config.CHAT_EMOJI else _strip_emoji(text)
             text = _humanize_chat(text)
         if not text:
             return random.choice(_FALLBACK_LINES)

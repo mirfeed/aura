@@ -213,6 +213,12 @@ class CompanionBot(discord.Client):
         if self._voice is not None and config.VOICE_PRELOAD and not game_mode.active():
             asyncio.create_task(self._voice.preload())
 
+    async def on_typing(self, channel: Any, user: Any, when: Any) -> None:
+        """Человек печатает — она подождёт, пока он допишет, и ответит на всё разом."""
+        if getattr(user, "bot", False) or self._message_handler is None:
+            return
+        self._message_handler.note_typing(getattr(channel, "id", 0), user.id)
+
     async def on_message(self, message: discord.Message) -> None:
         """
         Called for every message visible to the bot.
@@ -1356,7 +1362,7 @@ class CompanionBot(discord.Client):
             task = (f"{name} скинул(а) тебе ссылку почитать. Ты открыла: «{info['title']}» на {info['site']} — "
                     f"это {what}, первая глава открылась нормально; ты добавила в закладки и {when}. "
                     "Скажи коротко, в своём стиле. Ты её ещё НЕ читала — не рассказывай, о чём она.")
-            fallback = f"открыла «{info['title']}», добавила в закладки 📖"
+            fallback = f"открыла «{info['title']}», добавила в закладки"
         else:
             reason = info.get("reason") or "первая глава не открылась"
             task = (f"{name} скинул(а) тебе ссылку почитать, но прочитать не получилось: {reason}. "
@@ -1391,7 +1397,7 @@ class CompanionBot(discord.Client):
                     + (f" ({found['author']})" if found["author"] else "") + f" на {found['source']}, "
                     f"положила на свою полку и {when}. Скажи это коротко, в своём стиле. Ты её ещё НЕ читала — "
                     "не рассказывай, о чём она.")
-            fallback = f"нашла «{found['title']}», положила на полку 📚"
+            fallback = f"нашла «{found['title']}», положила на полку"
         else:
             task = (f"{name} посоветовал(а) тебе «{req['title']}». Ты поискала в бесплатных легальных библиотеках "
                     "(Викитека, Project Gutenberg — там в основном классика, всё, что уже в общественном достоянии) "
@@ -1603,7 +1609,7 @@ class CompanionBot(discord.Client):
                     f"Сегодня у {name} день рождения — ты помнишь это сама, никто не напоминал. "
                     "Поздравь в личке: тепло и по-своему, без открыточных штампов, можно вспомнить что-то, "
                     "что ты о нём/ней знаешь. Одно-два коротких сообщения.",
-                    fallback="с днём рождения! 💎",
+                    fallback="с днём рождения!",
                 )
                 if self._message_handler is not None:
                     await self._message_handler._send_with_typing(dm, text, random.uniform(2.0, 4.0))
