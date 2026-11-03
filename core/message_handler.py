@@ -228,6 +228,7 @@ class MessageContext:
     provocation: bool = False
     # В этом ответе проявить интерес к собеседнику — спросить после ответа (pipeline.text.choose_length).
     curious: bool = False
+    engage: str = ""  # как поддержать разговор: lead / dry / answered / shared (см. pipeline.text)
     # Display name of the person whose message this one replies to.
     reply_to_name: Optional[str] = None
     # Other recent chat participants: (anonymised key, display name, raw id).
