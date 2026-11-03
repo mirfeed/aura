@@ -312,6 +312,13 @@ class MessageHandler:
         self._inflight: Dict[Tuple[int, int], Dict[str, Any]] = {}
         # Когда человек последний раз «печатал…» (событие Discord), monotonic.
         self._typing_at: Dict[Tuple[int, int], float] = {}
+        # channel_id → id последнего сообщения в канале (чьего угодно): в личке discord.py его не ведёт,
+        # а по нему видно, что её ответ уже не «следом» и нужен reply.
+        self._last_msg_id: Dict[int, int] = {}
+
+    def _seen(self, channel_id: int, message_id: int) -> None:
+        if message_id > self._last_msg_id.get(channel_id, 0):
+            self._last_msg_id[channel_id] = message_id
 
     def note_typing(self, channel_id: int, user_id: int) -> None:
         """Discord: человек печатает — она подождёт, пока он допишет."""
@@ -353,6 +360,7 @@ class MessageHandler:
             Сообщения, которые человек дописал, пока она отправляла прошлый ответ (уже записаны
             в ленту), — ответить на них одним сообщением.
         """
+        self._seen(message.channel.id, message.id)
         # Спит — ничего не читает.  Личку разберёт, когда проснётся (CompanionBot._catch_up_dms),
         # поэтому в память её сейчас не пишем — иначе она будет считаться прочитанной.
         if schedule.is_asleep() and not force_reply:
@@ -700,6 +708,7 @@ class MessageHandler:
                 await self._send_with_typing(
                     message.channel, response, decision.typing_duration,
                     reply_to=message if not ctx.is_dm else None,
+                    reply_if_buried=message if ctx.is_dm else None,
                     already_waited=gen_seconds,
                     media=ctx.outgoing_media,
                 )
@@ -1120,6 +1129,12 @@ class MessageHandler:
                 + (" (напишешь в личку)" if is_dm and not ctx.is_dm else "")
                 + ". Коротко подтверди своими словами и назови время")
 
+    def _buried(self, channel: Any, target: Optional[discord.Message]) -> Optional[discord.Message]:
+        """*target*, если после него в канале уже есть другие сообщения (тогда без reply непонятно, на что ответ)."""
+        if target is None:
+            return None
+        return target if self._last_msg_id.get(getattr(channel, "id", 0), 0) > target.id else None
+
     async def _send_with_typing(
         self,
         channel: discord.abc.Messageable,
@@ -1128,6 +1143,7 @@ class MessageHandler:
         reply_to: Optional[discord.Message] = None,
         already_waited: float = 0.0,
         media: Optional[List[Any]] = None,
+        reply_if_buried: Optional[discord.Message] = None,
     ) -> None:
         """
         Show the typing indicator for *typing_duration* seconds then send.
@@ -1135,6 +1151,9 @@ class MessageHandler:
         If *reply_to* is provided the bot uses ``message.reply()`` so
         Discord renders the reply arrow pointing at the original message.
         Otherwise a plain ``channel.send()`` is used (DMs, proactive messages).
+        *reply_if_buried* — reply only if, by the time she sends, the channel already has newer
+        messages after it (he wrote more, or she answered something else) — otherwise it's unclear
+        what she's answering.
 
         Handles :exc:`discord.Forbidden` and :exc:`discord.HTTPException`
         without crashing.
@@ -1164,14 +1183,21 @@ class MessageHandler:
                         await asyncio.sleep(random.uniform(0.3, 1.2))  # пауза перед следующим
                     async with channel.typing():
                         await asyncio.sleep(delay)
+                    if i == 0:
+                        reply_to = reply_to or self._buried(channel, reply_if_buried)
+                    sent = None
                     if i == 0 and reply_to is not None:
                         try:
-                            await reply_to.reply(chunk, mention_author=False)
+                            sent = await reply_to.reply(chunk, mention_author=False)
                         except discord.HTTPException:
                             # Сообщение успели удалить — отвечаем просто в канал.
-                            await channel.send(chunk)
+                            sent = await channel.send(chunk)
                     else:
-                        await channel.send(chunk)
+                        sent = await channel.send(chunk)
+                    if sent is not None:
+                        self._seen(channel.id, sent.id)
+                if not chunks:
+                    reply_to = reply_to or self._buried(channel, reply_if_buried)
                 for i, path in enumerate(media or []):
                     await asyncio.sleep(random.uniform(0.8, 2.0) if chunks or i else 0.5)
                     if not chunks and i == 0 and reply_to is not None:
