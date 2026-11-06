@@ -402,6 +402,49 @@ _ENGAGE_RULES = {
 }
 
 
+# Пол собеседника — по тому, как он(а) пишет о себе: «я устала», «я пошёл», «я готова».
+_FEM_SELF_RE = re.compile(
+    r"(?<![\wё])я\s+(?:(?:так|очень|уже|не|ещё|еще|вчера|сегодня|тоже|прям|только|просто)\s+)*"
+    r"(?:[а-яё]{2,}(?:ла|лась)|рада|готова|сама|должна|уверена|согласна|занята|свободна|одна)(?![\wё])", re.I)
+_MASC_SELF_RE = re.compile(
+    r"(?<![\wё])я\s+(?:(?:так|очень|уже|не|ещё|еще|вчера|сегодня|тоже|прям|только|просто)\s+)*"
+    r"(?:[а-яё]{2,}[аеиоуыяё]л(?:ся)?|пош[её]л|н[её]с|рад|готов|сам|должен|уверен|согласен|занят|свободен|один)"
+    r"(?![\wё])", re.I)
+# «его(её)», «ему(ей)» — местоимения парой; «рассказал(а)», «сам(а)», «он(а)» — окончание.
+_PRON_PAIR_RE = re.compile(r"(?<![\wё])(его|ему|него|нему|им|ним|нём)\((её|ее|ей|неё|нее|ней)\)", re.I)
+_SUFFIX_RE = re.compile(r"(?<=[а-яё])\((а|ла|ая|ась|ой|на)\)", re.I)
+
+
+def _guess_gender(context: "MessageContext") -> str:
+    """'f' / 'm' по его(её) последним репликам; не понять — 'm' (чтобы не было «готов(а)»)."""
+    fem = masc = 0
+    for line in _speaker_lines(context, 12):
+        fem += len(_FEM_SELF_RE.findall(line))
+        masc += len(_MASC_SELF_RE.findall(line))
+    return "f" if fem > masc else "m"
+
+
+def _resolve_gender(text: str, gender: str) -> str:
+    """«рассказал(а)» → «рассказал» / «рассказала»: модель копирует такие формы из подсказок прямо в ответ."""
+    if "(" not in text:
+        return text
+    f = gender == "f"
+    text = re.sub(r"(?<![\wё])нём \(о ней\)", "ней" if f else "нём", text)
+    text = re.sub(r"(?<![\wё])самом\(ой\)", "самой" if f else "самом", text)
+    text = _PRON_PAIR_RE.sub(lambda m: m.group(2) if f else m.group(1), text)
+    return _SUFFIX_RE.sub(lambda m: m.group(1) if f else "", text)
+
+
+def _no_dashes(text: str) -> str:
+    """В чатах длинное тире не пишут: «кийоми — звучит» → «кийоми, звучит»."""
+    if "—" not in text and "–" not in text:
+        return text
+    text = re.sub(r"(?m)^\s*[—–]\s*", "", text)
+    text = re.sub(r"([,.!?…:;])\s*[—–]\s*", r"\1 ", text)
+    text = re.sub(r"\s+[—–]\s+", ", ", text)
+    return text.replace("—", "-").replace("–", "-")
+
+
 def _speaker_lines(context: "MessageContext", n: int = 3) -> List[str]:
     """Последние реплики собеседника (вместе с текущей)."""
     name = context.author_display_name or ""
@@ -2339,7 +2382,8 @@ class TextPipeline:
                 + (f"({context.late_note})\n" if getattr(context, "late_note", "") else "")
                 + f"Ответь как {config.BOT_NAME} — именно {speaker}."
             )
-        return system, user
+        gender = _guess_gender(context)
+        return _resolve_gender(system, gender), _resolve_gender(user, gender)
 
     # ------------------------------------------------------------------
     # Post-processing
@@ -2402,9 +2446,11 @@ class TextPipeline:
             else:
                 text = truncated.rstrip() + "…"
 
+        text = _resolve_gender(text, _guess_gender(context))
         if context.is_voice:
             text = strip_voice_tics(text) or text
         elif "```" not in text:
+            text = _no_dashes(text)
             text = _drop_repeated_emoji(text, context) if config.CHAT_EMOJI else _strip_emoji(text)
             text = _humanize_chat(text)
         if not text:

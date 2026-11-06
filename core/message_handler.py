@@ -91,6 +91,12 @@ _SENT_CLAIM_RE = re.compile(
     re.IGNORECASE)
 
 
+# Обороты, которые звучат как бот-«подружка»: при них ответ переписывается один раз.
+_CRUTCH_RE = re.compile(
+    r"(?<![\wё])(?:(?:это|прям|просто|классика и|ну)\s+база|база\s+для|официально|звучит\s+как\s+(?:кто|что)[- ]то|"
+    r"красн\w+\s+флаж\w*|в\s+категорию|(?:это|ну|о,?|фигня\s+это)\s+классика)(?![\wё])", re.I)
+
+
 def _as_file(item: Any) -> discord.File:
     """Путь к картинке из её коллекции или уже готовый discord.File (пересылаемое вложение)."""
     return item if isinstance(item, discord.File) else discord.File(str(item))
@@ -327,7 +333,11 @@ class MessageHandler:
 
     def note_typing(self, channel_id: int, user_id: int) -> None:
         """Discord: человек печатает — она подождёт, пока он допишет."""
-        self._typing_at[(channel_id, user_id)] = time.monotonic()
+        key = (channel_id, user_id)
+        now = time.monotonic()
+        if now - self._typing_at.get(key, -1e9) > 120:  # раз в пару минут — видно, что событие вообще доходит
+            _logger.info("Typing seen", extra={"data": {"channel_id": channel_id}})
+        self._typing_at[key] = now
 
     async def _wait_quiet(self, key: Tuple[int, int], pend: Dict[str, Any]) -> None:
         """Ждёт, пока человек допишет: пауза после последнего сообщения и он больше не печатает."""
@@ -698,6 +708,13 @@ class MessageHandler:
                     message = more[-1]
                     _logger.info("Reply redone with new messages", extra={"data": {"added": len(more)}})
                     response = await self._pipeline.generate(ctx)
+                if _CRUTCH_RE.search(response) and not ctx.outgoing_media:
+                    _logger.info("Crutch phrase — rewriting", extra={"data": {"draft": response[:120]}})
+                    ctx.late_note = (ctx.late_note + "; " if ctx.late_note else "") + (
+                        f"ты чуть не написала «{_CRUTCH_RE.search(response).group(0)}» — так не пиши, это звучит как "
+                        "бот; скажи то же самое проще, обычными словами, как пишут другу")
+                    redo = await self._pipeline.generate(ctx)
+                    response = redo if redo and not _CRUTCH_RE.search(redo) else response
                 gen_seconds = time.monotonic() - gen_started
 
                 # Remove the thinking reaction before sending the reply.

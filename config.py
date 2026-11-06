@@ -551,7 +551,7 @@ CURIOSITY_CHAT: float = _get_float("CURIOSITY_CHAT", 0.3)   # в общем ча
 
 # Человек пишет очередью коротких сообщений — она ждёт, пока он допишет (пауза + «печатает…»),
 # и отвечает одним сообщением на всё.  Дописал, пока она отвечала, — учтёт и это.
-CHAT_BATCH_QUIET_S: float = _get_float("CHAT_BATCH_QUIET_S", 3.5)     # тишина после последнего сообщения
+CHAT_BATCH_QUIET_S: float = _get_float("CHAT_BATCH_QUIET_S", 5.0)     # тишина после последнего сообщения
 CHAT_BATCH_MAX_WAIT_S: float = _get_float("CHAT_BATCH_MAX_WAIT_S", 25.0)  # но не дольше этого сверх задержки
 # Эмодзи и смайлики :) в её сообщениях (False — вычищаются).
 CHAT_EMOJI: bool = _get_bool("CHAT_EMOJI", False)
