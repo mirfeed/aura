@@ -435,6 +435,55 @@ def _resolve_gender(text: str, gender: str) -> str:
     return _SUFFIX_RE.sub(lambda m: m.group(1) if f else "", text)
 
 
+# «[ссылка]», «[link]», «[фото]» — вместо того, чего у неё нет.
+_FAKE_ATTACH_RE = re.compile(r"\[\s*(?:ссылк|линк|link|url|адрес|фото|картинк|видео|файл|скрин|гифк)[^\]\n]{0,30}\]", re.I)
+# Ремарки ролевика: «[начинает листать…]», «*улыбается*», «(смеётся)».
+_STAGE_RE = re.compile(
+    r"\[[^\]\n]{2,90}\]|(?<![\w*])\*[^*\n]{3,80}\*(?![\w*])|"
+    r"\((?:смеётся|смеется|улыбается|вздыхает|подмигивает|задумывается|задумалась|пожимает[^)\n]{0,30}|"
+    r"начинает[^)\n]{0,60}|печатает[^)\n]{0,40})\)", re.I)
+
+
+_URL_RE = re.compile(r"https?://\S+|(?<![\w@])(?:www\.)?[a-z0-9-]+\.(?:com|ru|org|net|gg|io|me|tv)/\S*", re.I)
+# «вот ссылка», «держи линк», «кидаю ссылку» — обещание ссылки.
+_LINK_CLAIM_RE = re.compile(r"(?:вот|держи|лови|кидаю|скидываю|скинула|отправила|прикрепила)[^.\n?]{0,25}(?:ссылк|линк)"
+                            r"|(?:ссылк|линк)\w*\s+(?:вот|тут|держи|лови)", re.I)
+
+
+def _check_links(text: str, context: "MessageContext") -> str:
+    """
+    Ссылки в её ответе — только те, что уже были (в переписке, в найденном в интернете): свою она не знает
+    и выдумывает («discord.com/settings/appведения»).  Выдуманную убирает; «вот ссылка» без ссылки — фальшь.
+    """
+    known = " ".join([context.content or "", getattr(context, "web_results", "") or ""]
+                     + list(context.recent_channel_history or []))
+    fake = False
+    for url in _URL_RE.findall(text):
+        if url.rstrip(".,)!?»") not in known:
+            text = text.replace(url, "")
+            fake = True
+    if _LINK_CLAIM_RE.search(text) and not _URL_RE.search(text):
+        fake = True
+    if fake:
+        context.fake_attach = True
+    return text
+
+
+# «приятнаяples» — модель склеила русское слово с английским обрывком.
+_GLUED_LATIN_RE = re.compile(r"(?<=[а-яё]{2})[a-z]{2,}(?![\w-])", re.I)
+_MIXED_WORD_RE = re.compile(r"[а-яё][a-z]|[a-z][а-яё]", re.I)
+
+
+def _drop_glued_latin(text: str, context: "MessageContext") -> str:
+    """Убирает английский обрывок, приклеенный к русскому слову, если человек сам так не пишет («zамок»)."""
+    if not _GLUED_LATIN_RE.search(text):
+        return text
+    theirs = " ".join(_speaker_lines(context, 6))
+    if _MIXED_WORD_RE.search(theirs):
+        return text  # у них игра «пиши з как z» и т.п. — не мешать
+    return _GLUED_LATIN_RE.sub("", text)
+
+
 def _no_dashes(text: str) -> str:
     """В чатах длинное тире не пишут: «кийоми — звучит» → «кийоми, звучит»."""
     if "—" not in text and "–" not in text:
@@ -485,6 +534,34 @@ def _overused_words(context: "MessageContext") -> List[str]:
             if w not in _STOP_WORDS:
                 counts[w] = counts.get(w, 0) + 1
     return [w for w, c in sorted(counts.items(), key=lambda kv: -kv[1]) if c >= 2][:8]
+
+
+# «ты вчера обещала…», «ты же сама говорила…» — что она якобы сказала или сделала.
+_CLAIM_ABOUT_ME_RE = re.compile(
+    r"(?<![\wё])ты\s+(?:(?:же|ведь|вчера|сама|тогда|недавно|мне|уже|сегодня|утром)\s+){0,3}"
+    r"(?:обещала|говорила|сказала|писала|соглашалась|согласилась|должна|клялась|признавалась|признала)", re.I)
+# «Даша сказала, что ты…», «мне X говорил про тебя» — чужие слова через третьи руки.
+_GOSSIP_RE = re.compile(
+    r"(?:сказал[аи]?|говорил[аи]?|писал[аи]?|рассказал[аи]?)\s+(?:мне\s+)?(?:что|про|о)\s+(?:тебя|тебе|ты|тобой)"
+    r"|про\s+тебя\s+(?:сказал|говорил|пишут|говорят)|(?:все|говорят|пишут),?\s+что\s+ты", re.I)
+_GOSSIP_RE = re.compile(_GOSSIP_RE.pattern.replace("(?:мне\\s+)?", "(?:мне,?\\s+)?(?:,\\s*)?"), re.I)
+
+
+def _doubt_note(context: "MessageContext") -> str:
+    """Перед самым ответом: ей приписывают слова/обещания или пересказывают сплетню про неё — не верить сразу."""
+    said = context.content or ""
+    notes = []
+    if _CLAIM_ABOUT_ME_RE.search(said):
+        notes.append(
+            "ВНИМАНИЕ: тебе приписывают, что ты что-то сказала или пообещала. Посмотри переписку выше и "
+            "«Обрывки памяти»: если там этого НЕТ — ты такого не помнишь и не подтверждаешь («не помню такого», "
+            "«когда это я такое говорила?», можно с подколкой), ничего не обещаешь и не «скидываешь». "
+            "Соглашайся, только если это правда там есть.")
+    if _GOSSIP_RE.search(said):
+        notes.append(
+            "Тебе пересказывают чужие слова про тебя — это через третьи руки: на веру не принимай, не "
+            "извиняйся и не обижайся сразу — усомнись («прям так и сказала?») или скажи, что спросишь у неё сама.")
+    return ("(" + " ".join(notes) + ")\n") if notes else ""
 
 
 def _wants_curiosity(context: "MessageContext") -> bool:
@@ -567,7 +644,8 @@ _PERSONAL_RE = re.compile(
 _SMALLTALK_Q_RE = re.compile(
     r"(?:меня\s+зовут|зовут\s+меня|меня\s+\w+\s+зовут|давай\s+знаком|будем\s+знаком|"
     r"что\s+(?:ещ[её]\s+)?(?:рассказать|расскажешь|скажешь)|расскажи\s+о\s+себе|"
-    r"(?<![\wё])а\s+ты(?![\wё])|а\s+у\s+тебя|как\s+тебе|ты\s+(?:играешь|любишь|смотрела|читала|слушаешь))",
+    r"(?<![\wё])а\s+ты(?![\wё])|а\s+у\s+тебя|как\s+тебе|ты\s+(?:играешь|любишь|смотрела|читала|слушаешь)|"
+    r"ты\s+(?:умеешь|можешь|способна|знаешь\s+как|бот|ии|нейросеть|человек|настоящая|живая|робот)(?![\wё]))",
     re.I)
 _SEARCH_SCHEMA: Dict[str, Any] = {
     "type": "object",
@@ -1627,7 +1705,7 @@ class TextPipeline:
                 )
             share = (media is not None and self._media is not None
                      and (MediaPicker.asked(request) or MediaPicker.asked(what)))
-            items = list(enumerate(self._media.library(), 1)) if share else []
+            items = list(enumerate(self._media.library(target.channel_id), 1)) if share else []
             if items:
                 user += ("\nПросят поделиться картинкой — выбери подходящую из своей коллекции и поставь её "
                          "метку (сама картинка уйдёт вместе с сообщением).\n" + self._media.prompt_block(items))
@@ -1847,7 +1925,10 @@ class TextPipeline:
                         {"role": "user", "images": images, "content": (
                             "Одной-двумя фразами по-русски: что на картинке — кто или что, ключевые детали; "
                             "все важные надписи, числа, цены и суммы перепиши точно, как написано" + (" и что происходит (это кадры гифки)" if getattr(context, "is_gif", False) else "")
-                            + ". Без оценочных слов и вступлений." + rate)},
+                            + f". Без оценочных слов и вступлений. Подпись — от лица {config.BOT_NAME}: если на "
+                            f"скриншоте переписка, где есть {config.BOT_NAME} (в том числе «{config.BOT_NAME} БОТ»), "
+                            f"— это она сама, пиши «моя переписка с …», «я пишу: …», а не «бот {config.BOT_NAME}»."
+                            + rate)},
                     ],
                     "stream": False,
                     "think": False,
@@ -2217,7 +2298,7 @@ class TextPipeline:
                 + "."
             )
         if self._media is not None and not context.is_voice:
-            items = [(i, it) for i, it in enumerate(self._media.library(), 1)
+            items = [(i, it) for i, it in enumerate(self._media.library(context.channel_id), 1)
                      if about_books or MediaPicker.asked(context.content)
                      or not it["caption"].lower().startswith("иллюстрация из")]
             if items:
@@ -2281,6 +2362,10 @@ class TextPipeline:
                 "один. Конкретный и про то, о чём сейчас говорит человек (если он рассказал о себе — про это), "
                 "без дежурных «а у тебя как?» и «чем занимаешься?» и без смены темы."
             )
+        now_rules.append(
+            "Прежде чем согласиться, сверься с перепиской выше: если человек противоречит сам себе или тому, "
+            "что ты видела, — заметь это, а не поддакивай."
+        )
         if not context.is_voice and _writes_english(context):
             now_rules.append(
                 f"{context.author_display_name} пишет по-английски — отвечай по-английски, без русских слов: "
@@ -2326,7 +2411,9 @@ class TextPipeline:
             attach = seen + (
                 " смотри на неё по-настоящему и, если говоришь о ней, — о конкретном, что видно, а не общими "
                 "словами; не выдумывай. Ты не ассистент: не описывай всё подряд, отреагируй коротко, как в чате, "
-                "— одна-две фразы, одна деталь, которая зацепила]")
+                "— одна-две фразы, одна деталь, которая зацепила. Если на скриншоте переписка с "
+                f"{config.BOT_NAME} (ник {config.BOT_NAME}, «БОТ» рядом) — это ТЫ и твои сообщения: говори о них "
+                "«я написала», а не «она» и не «бот»]")
 
         if getattr(context, "web_results", ""):
             attach += (f" [ты только что загуглила «{context.web_query}», вот что нашлось:\n{context.web_results}\n"
@@ -2338,7 +2425,7 @@ class TextPipeline:
             attach += (f" [ты пыталась загуглить «{context.web_query}», но ничего толкового не нашлось — "
                        "так и скажи, если это важно для ответа]")
         if self._media is not None and not context.is_voice and MediaPicker.asked(context.content):
-            if self._media.library():
+            if self._media.library(context.channel_id):
                 attach += (" [тебя просят скинуть картинку/гифку — если в твоей коллекции есть подходящая, "
                            "добавь отдельной строкой метку [картинка: номер]; если подходящей нет — так и скажи]")
             else:
@@ -2372,7 +2459,8 @@ class TextPipeline:
             user = (
                 f"Личная переписка с {speaker}. Последние сообщения (старые сверху):\n{history}\n\n"
                 f"Новое сообщение от {speaker}{attach}:\n{context.content}\n{late}\n"
-                f"Ответь как {config.BOT_NAME}."
+                + _doubt_note(context)
+                + f"Ответь как {config.BOT_NAME}."
             )
         else:
             user = (
@@ -2380,6 +2468,7 @@ class TextPipeline:
                 f"{history}\n\n"
                 f"Новое сообщение от {speaker}{reply_note}{attach}:\n{context.content}\n\n"
                 + (f"({context.late_note})\n" if getattr(context, "late_note", "") else "")
+                + _doubt_note(context)
                 + f"Ответь как {config.BOT_NAME} — именно {speaker}."
             )
         gender = _guess_gender(context)
@@ -2393,6 +2482,14 @@ class TextPipeline:
         """Clean and trim the raw model output before sending to Discord."""
         # Метки [картинка: …] сюда доходят только там, где картинки не отправляются, — просто убрать.
         text = MediaPicker.extract(raw)[0] if "[" in raw or "(" in raw else raw.strip()
+        if not context.is_voice and "```" not in text:
+            # Плейсхолдер вместо ссылки/файла — она делает вид, что что-то скинула (сам ответ перепишет handler).
+            if _FAKE_ATTACH_RE.search(text):
+                context.fake_attach = True
+            text = _check_links(text, context)
+            text = _drop_glued_latin(text, context)
+            text = _STAGE_RE.sub("", text)
+            text = "\n".join(re.sub(r"[ \t]{2,}", " ", l).strip() for l in text.splitlines() if l.strip())
         text = strip_foreign_script(text, keep_if=context.content)
 
         # Strip echo of the bot's name / signatures the model may prepend.

@@ -116,14 +116,21 @@ class ImageMemory:
             ).fetchall()
         return [self._row(r, 0) for r in rows]
 
-    def favorite_files(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Любимые, у которых есть файл в папке любимых: [{caption, path, is_gif}], лучшие первыми."""
+    def favorite_files(self, limit: int = 20, channel_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Любимые, у которых есть файл в папке любимых: [{caption, path, is_gif}], лучшие первыми.
+        *channel_id* — куда она собирается кидать: присланное ей в личку уходит только обратно в ту же личку
+        (чужие фото из лички в общий чат или другому человеку — нельзя).
+        """
         if self._fav_dir is None:
             return []
+        where, args = "", [limit]
+        if channel_id is not None:
+            where, args = " AND (is_dm = 0 OR channel_id = ?)", [channel_id, limit]
         with self._lock:
             rows = self._db.execute(
-                "SELECT caption, fav_file, is_gif FROM images WHERE favorite = 1 AND fav_file != ''"
-                " ORDER BY fav_score DESC, ts DESC LIMIT ?", (limit,),
+                "SELECT caption, fav_file, is_gif FROM images WHERE favorite = 1 AND fav_file != ''" + where
+                + " ORDER BY fav_score DESC, ts DESC LIMIT ?", args,
             ).fetchall()
         out = []
         for caption, name, is_gif in rows:

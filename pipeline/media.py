@@ -44,10 +44,10 @@ class MediaPicker:
 
     # ------------------------------------------------------------------
 
-    def library(self) -> List[Dict[str, Any]]:
-        """Её коллекция: любимые картинки с файлами, лучшие первыми."""
+    def library(self, channel_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Её коллекция: любимые картинки с файлами, лучшие первыми (*channel_id* — что можно кинуть туда)."""
         try:
-            return self._images.favorite_files(limit=config.MEDIA_PROMPT_ITEMS)
+            return self._images.favorite_files(limit=config.MEDIA_PROMPT_ITEMS, channel_id=channel_id)
         except Exception as exc:  # noqa: BLE001
             _logger.warning("Favorites list failed", extra={"data": {"error": str(exc)}})
             return []
@@ -84,7 +84,7 @@ class MediaPicker:
 
     def pick(self, ref: str, channel_id: int) -> Optional[Path]:
         """Номер из списка или описание → файл.  Только из коллекции, ничего не выдумываем."""
-        lib = self.library()
+        lib = self.library(channel_id)
         if not lib:
             return None
         m = re.match(r"\s*№?\s*(\d{1,3})\b", ref)

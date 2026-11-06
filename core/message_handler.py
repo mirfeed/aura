@@ -94,7 +94,7 @@ _SENT_CLAIM_RE = re.compile(
 # Обороты, которые звучат как бот-«подружка»: при них ответ переписывается один раз.
 _CRUTCH_RE = re.compile(
     r"(?<![\wё])(?:(?:это|прям|просто|классика и|ну)\s+база|база\s+для|официально|звучит\s+как\s+(?:кто|что)[- ]то|"
-    r"красн\w+\s+флаж\w*|в\s+категорию|(?:это|ну|о,?|фигня\s+это)\s+классика)(?![\wё])", re.I)
+    r"красн\w+\s+флаж\w*|в\s+категорию|(?:это|ну|о,?|фигня\s+это)\s+(?:уже\s+|прям\s+|просто\s+|такая\s+)?классика)(?![\wё])", re.I)
 
 
 def _as_file(item: Any) -> discord.File:
@@ -239,6 +239,7 @@ class MessageContext:
     provocation: bool = False
     # В этом ответе проявить интерес к собеседнику — спросить после ответа (pipeline.text.choose_length).
     curious: bool = False
+    fake_attach: bool = False  # в ответе «[ссылка]» / «[фото]» вместо настоящего — переписать
     engage: str = ""  # как поддержать разговор: lead / dry / answered / shared (см. pipeline.text)
     # Display name of the person whose message this one replies to.
     reply_to_name: Optional[str] = None
@@ -708,11 +709,22 @@ class MessageHandler:
                     message = more[-1]
                     _logger.info("Reply redone with new messages", extra={"data": {"added": len(more)}})
                     response = await self._pipeline.generate(ctx)
+                if getattr(ctx, "fake_attach", False) and not ctx.outgoing_media:
+                    # «Лови, вот она [ссылка]» — ничего не скинула, а делает вид.
+                    _logger.info("Fake attachment placeholder — rewriting", extra={"data": {"draft": response[:120]}})
+                    ctx.fake_attach = False
+                    ctx.late_note = (ctx.late_note + "; " if ctx.late_note else "") + (
+                        "ссылки или файла у тебя под рукой нет, и в этом ответе ты ничего не прикладываешь: не "
+                        "пиши «вот», «держи», «лови». Если ссылка есть выше в переписке — можешь повторить её "
+                        "текстом; иначе просто скажи, что ссылки нет, и, если знаешь, объясни словами, где это найти")
+                    redo = await self._pipeline.generate(ctx)
+                    response = (redo if redo and not getattr(ctx, "fake_attach", False)
+                                else "блин, ссылки под рукой нет")
                 if _CRUTCH_RE.search(response) and not ctx.outgoing_media:
                     _logger.info("Crutch phrase — rewriting", extra={"data": {"draft": response[:120]}})
                     ctx.late_note = (ctx.late_note + "; " if ctx.late_note else "") + (
-                        f"ты чуть не написала «{_CRUTCH_RE.search(response).group(0)}» — так не пиши, это звучит как "
-                        "бот; скажи то же самое проще, обычными словами, как пишут другу")
+                        f"не используй выражение «{_CRUTCH_RE.search(response).group(0)}» (звучит как бот) — "
+                        "говори обычными словами, как пишут другу")
                     redo = await self._pipeline.generate(ctx)
                     response = redo if redo and not _CRUTCH_RE.search(redo) else response
                 gen_seconds = time.monotonic() - gen_started
