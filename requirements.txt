@@ -21,3 +21,7 @@ numpy
 num2words>=0.5.13
 tzdata                          # часовой пояс на Windows (она знает, который час)
 pypdf>=4.0                      # чтение: книги в PDF
+# --- Пульт (tools/panel.py): окно, значок в трее ---
+pywebview>=5.0                  # окно на WebView2 (без него пульт откроется в браузере)
+pystray>=0.19
+Pillow

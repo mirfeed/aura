@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from people_report import ROOT, _db_path  # noqa: E402
 
 HOST = "127.0.0.1"
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8766
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 8766
 
 
 def _connect() -> sqlite3.Connection:
@@ -230,9 +230,14 @@ load();
 </script></body></html>"""
 
 
-def main() -> None:
+def make_app() -> web.Application:
     app = web.Application(middlewares=[same_origin])
     app.add_routes([web.get("/", index), web.get("/api/people", api_people), web.post("/api/save", api_save)])
+    return app
+
+
+def main() -> None:
+    app = make_app()
     url = f"http://{HOST}:{PORT}"
     print(f"Отношения Ауры: {url}  (закройте окно, чтобы остановить)")
     try:

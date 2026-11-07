@@ -135,6 +135,12 @@ GAME_MODE_FLAG: Path = _PROJECT_ROOT / "data" / "game_mode.flag"
 GAME_MODE_GPU_LAYERS: int = _get_int("GAME_MODE_GPU_LAYERS", 8)
 GAME_MODE_THREADS: int = _get_int("GAME_MODE_THREADS", 4)  # ядер CPU под модель — остальные игре
 
+# Пульт (tools/panel.py, http://127.0.0.1:8770) говорит с ботом через этот локальный порт (0 — выключить).
+# Ключ доступа бот сам кладёт в data/control.token при каждом запуске.
+CONTROL_PORT: int = _get_int("CONTROL_PORT", 8771)
+CONTROL_TOKEN_FILE: Path = _PROJECT_ROOT / "data" / "control.token"
+BOT_PID_FILE: Path = _PROJECT_ROOT / "data" / "bot.pid"
+
 # ---------------------------------------------------------------------------
 # Memory / vector store  (active from Day 3)
 # ---------------------------------------------------------------------------

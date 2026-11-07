@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Аура</title>
+<style>
+:root{--bg:#f6f5f8;--card:#fff;--text:#1d1b22;--muted:#6b6876;--line:#e3e0ea;--accent:#7a4fd6;--accent-soft:#efe8fc;
+  --ok:#1f8a4c;--warn:#b5651d;--err:#c23b3b;--night:#4b4a8c}
+@media (prefers-color-scheme:dark){:root{--bg:#16151a;--card:#201e26;--text:#ecebf0;--muted:#9a97a6;--line:#33303c;
+  --accent:#a986f0;--accent-soft:#2c2540;--ok:#4cc77f;--warn:#e39a52;--err:#ef6b6b;--night:#8d8cf0}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,"Segoe UI",sans-serif}
+header{position:sticky;top:0;z-index:3;background:var(--bg);border-bottom:1px solid var(--line);
+  padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;margin-right:auto}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--muted);flex:none}
+.dot.on{background:var(--ok)}.dot.sleep{background:var(--night)}.dot.warn{background:var(--warn)}.dot.err{background:var(--err)}
+.brand b{font-size:17px}.brand span{color:var(--muted);font-size:13px}
+nav{display:flex;gap:4px}
+nav button{border:0;background:none;padding:7px 12px;border-radius:8px;color:var(--muted)}
+nav button.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
+button{padding:7px 13px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);
+  cursor:pointer;font:inherit;font-size:14px}
+button:hover:not(:disabled){border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{color:var(--err)}
+button:disabled{opacity:.45;cursor:default}
+select{padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit;font-size:14px}
+main{max-width:1100px;margin:0 auto;padding:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 10px;font-weight:600}
+.big{font-size:22px;font-weight:650;margin:0 0 4px}
+.sub{color:var(--muted);font-size:13.5px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:14px}
+.kv dt{color:var(--muted)}.kv dd{margin:0}
+.bar{height:6px;border-radius:3px;background:var(--line);overflow:hidden;margin:8px 0 4px}
+.bar i{display:block;height:100%;background:var(--accent)}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12.5px;background:var(--accent-soft);color:var(--accent)}
+.pill.warn{background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)}
+.pill.night{background:color-mix(in srgb,var(--night) 18%,transparent);color:var(--night)}
+.muted{color:var(--muted)}.ok{color:var(--ok)}.warn{color:var(--warn)}.err{color:var(--err)}
+.toggles{columns:2 300px;column-gap:24px}
+.tgroup{break-inside:avoid;margin-bottom:12px}
+.tgroup h3{font-size:13px;margin:0 0 4px;color:var(--muted);font-weight:600}
+label.sw{display:flex;align-items:center;gap:10px;padding:5px 0;cursor:pointer;font-size:14px}
+label.sw input{appearance:none;width:34px;height:20px;border-radius:10px;background:var(--line);position:relative;flex:none;
+  cursor:pointer;transition:background .15s;margin:0}
+label.sw input::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;
+  transition:left .15s;box-shadow:0 1px 2px #0003}
+label.sw input:checked{background:var(--accent)}
+label.sw input:checked::after{left:16px}
+.events{list-style:none;margin:0;padding:0;font-size:13.5px;max-height:220px;overflow:auto}
+.events li{padding:4px 0;border-top:1px solid var(--line);display:flex;gap:10px}
+.events li:first-child{border-top:0}
+.events time{color:var(--muted);font-variant-numeric:tabular-nums;flex:none}
+#log{font:12.5px/1.5 ui-monospace,Consolas,monospace;background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:6px 0;max-height:calc(100vh - 150px);overflow:auto}
+#log div{padding:2px 14px;display:grid;grid-template-columns:62px minmax(120px,220px) 1fr;gap:10px}
+#log div:hover{background:var(--accent-soft)}
+#log .WARNING{color:var(--warn)}#log .ERROR,#log .CRITICAL{color:var(--err)}
+#log span:last-child{white-space:pre-wrap;word-break:break-word;color:var(--muted)}
+iframe{width:100%;height:calc(100vh - 62px);border:0;display:block;background:var(--bg)}
+.tab{display:none}.tab.active{display:block}
+#frames{display:none}#frames.active{display:block}
+main.flush{max-width:none;padding:0}
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:10px 16px;
+  border-radius:10px;display:none;z-index:9;max-width:90vw;font-size:14px}
+#toast button{margin-left:10px;padding:3px 10px;font-size:13px}
+.offline{padding:28px;text-align:center}
+@media (max-width:640px){#log div{grid-template-columns:52px 1fr}#log span:nth-child(2){display:none}}
+</style></head><body>
+<header>
+  <div class="brand"><div class="dot" id="hdot"></div><b>Аура</b><span id="hstate">…</span></div>
+  <nav>
+    <button data-tab="home" class="active">Главная</button>
+    <button data-tab="log">Лог</button>
+    <button data-tab="settings">Настройки</button>
+    <button data-tab="people">Отношения</button>
+  </nav>
+  <div class="row" style="margin:0">
+    <button id="bStart" class="primary">Запустить</button>
+    <button id="bRestart">Перезапустить</button>
+    <button id="bStop" class="danger">Остановить</button>
+  </div>
+</header>
+
+<main id="home" class="tab active">
+  <div id="offline" class="card offline" style="display:none;margin-bottom:14px"></div>
+  <div class="grid">
+    <section class="card" id="cDay">
+      <h2>Сейчас</h2>
+      <p class="big" id="phase">—</p>
+      <div class="sub" id="plan"></div>
+      <div class="sub" id="ovr"></div>
+      <div class="row" id="wakeRow">
+        <select id="wakeFor"><option value="30">на 30 минут</option><option value="60" selected>на час</option>
+          <option value="180">на 3 часа</option><option value="">до утра</option></select>
+        <button class="primary" id="bWake">Разбудить</button>
+      </div>
+      <div class="row" id="sleepRow">
+        <select id="sleepFor"><option value="60">на час</option><option value="180">на 3 часа</option>
+          <option value="" selected>до обычного подъёма</option></select>
+        <button id="bSleep">Уложить спать</button>
+        <label class="sw" style="padding:0"><input type="checkbox" id="quiet">без «спокойной ночи»</label>
+      </div>
+      <div class="row"><button id="bAuto">Вернуть обычный распорядок</button></div>
+    </section>
+
+    <section class="card" id="cRead">
+      <h2>Чтение</h2>
+      <p class="big" id="book">—</p>
+      <div class="bar"><i id="bookBar" style="width:0"></i></div>
+      <div class="sub" id="bookPos"></div>
+      <div class="sub" id="readState" style="margin-top:6px"></div>
+      <div class="row">
+        <button class="primary" id="bDistract">Отвлечь от книги</button>
+        <button id="bRead">Почитать сейчас</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Она</h2>
+      <dl class="kv" id="she"></dl>
+    </section>
+
+    <section class="card">
+      <h2>Компьютер</h2>
+      <dl class="kv" id="sys"></dl>
+      <div class="row">
+        <label class="sw" style="padding:0"><input type="checkbox" id="game">Игровой режим: только чат, видеопамять игре</label>
+      </div>
+      <div class="row">
+        <button id="bUnload">Выгрузить модель</button>
+        <button id="bF5"></button>
+      </div>
+    </section>
+
+    <section class="card" style="grid-column:1/-1">
+      <h2>Переключатели</h2>
+      <div class="toggles" id="toggles"></div>
+      <div class="sub">Сохраняются в .env. Почти всё действует сразу; если нужен перезапуск, пульт скажет.</div>
+    </section>
+
+    <section class="card">
+      <h2>Пульт</h2>
+      <label class="sw"><input type="checkbox" id="autoBot">Запускать Ауру вместе с пультом</label>
+      <label class="sw"><input type="checkbox" id="withWin">Запускать пульт вместе с Windows (в трее)</label>
+      <div class="sub" style="margin-top:6px">Окно можно закрыть: пульт останется в трее, Аура продолжит работать.</div>
+      <div class="row">
+        <button id="bQuit">Закрыть пульт</button>
+        <button id="bQuitAll" class="danger">Выключить Ауру и пульт</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>События пульта</h2>
+      <ul class="events" id="events"></ul>
+    </section>
+  </div>
+</main>
+
+<main id="log-tab" class="tab">
+  <div class="row" style="margin:0 0 10px">
+    <select id="logOnly"><option value="main" selected>Главное</option><option value="all">Всё</option>
+      <option value="errors">Только ошибки и предупреждения</option></select>
+    <label class="sw" style="padding:0"><input type="checkbox" id="logLive" checked>обновлять</label>
+  </div>
+  <div id="log"></div>
+</main>
+
+<div id="frames">
+  <iframe id="fSettings" data-src="http://127.0.0.1:8765/" title="Настройки"></iframe>
+  <iframe id="fPeople" data-src="http://127.0.0.1:8766/" title="Отношения"></iframe>
+</div>
+<div id="toast"></div>
+
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const hm=iso=>iso?iso.slice(11,16):"";           // время по её часовому поясу (как пишет бот)
+const localHm=iso=>{try{return new Date(iso).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})}catch{return""}};
+const PH={asleep:"Спит",morning:"Утро, сонная",day:"День",night:"Ночь, её время"};
+const MOOD={neutral:"обычное",curious:"любопытное",tired:"уставшая",amused:"весёлое",withdrawn:"замкнулась",irritated:"раздражена",cheerful:"радостная"};
+const EV={"Bot ready":"в сети","Reading session":"почитала","Day phase changed":"фаза дня","Asleep — message left for later":"спит, сообщение на потом",
+  "Woken up from panel":"разбудили с пульта","Put to sleep from panel":"уложили с пульта","Distracted from reading":"отвлекли от книги",
+  "Reading interrupted":"чтение прервано","Binge started":"зачиталась","Binge ended":"отложила книгу","Goodnight sent":"пожелала спокойной ночи",
+  "Setting changed from panel":"переключатель","Shutting down bot":"выключается","Bot has shut down cleanly":"выключилась"};
+let S={},tab="home",lastToggles="";
+
+function toast(html,ms=3500){const t=$("#toast");t.innerHTML=html;t.style.display="block";clearTimeout(t._h);t._h=setTimeout(()=>t.style.display="none",ms)}
+async function act(body,okMsg){
+  try{const r=await fetch("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const d=await r.json();if(d.ok===false){toast(esc(d.error||"не вышло"));return d}
+    if(okMsg)toast(typeof okMsg==="function"?okMsg(d):okMsg);setTimeout(load,300);return d}
+  catch(e){toast("пульт не отвечает");return{}}
+}
+function mins(iso){if(!iso)return"";const m=Math.round((new Date(iso)-Date.now())/60000);return m<60?`${m} мин`:`${Math.floor(m/60)} ч ${m%60} мин`}
+
+function render(){
+  const b=S.bot||{},on=!!S.pid,link=!!S.bot;
+  // шапка
+  const dot=$("#hdot");dot.className="dot "+(!on?"":!link?"warn":b.phase==="asleep"?"sleep":"on");
+  let st=!on?"выключена":S.busy==="starting"?"запускается…":S.busy==="stopping"?"останавливается…":S.busy==="restarting"?"перезапускается…":
+    !link?"работает, но без связи с пультом":(b.phase==="asleep"?"спит":"в сети")+(b.latency_ms!=null?` · пинг ${b.latency_ms} мс`:"");
+  if(S.restart_in)st=`упала, перезапуск через ${S.restart_in} с`;
+  $("#hstate").textContent=st;
+  $("#bStart").disabled=on||!!S.busy;$("#bRestart").disabled=!on||!!S.busy;$("#bStop").disabled=!on||!!S.busy;
+  const off=$("#offline");
+  if(!on){off.style.display="";off.innerHTML=`<p class="big">Аура выключена</p><p class="sub">Нажми «Запустить». Ollama поднимется сама, без окон.</p>`}
+  else if(!link&&!S.busy){off.style.display="";off.innerHTML=`<p class="big">Аура работает старым способом</p><p class="sub">Её запустили до пульта, поэтому разбудить, уложить и переключать на лету пока нельзя. Нажми «Перезапустить», и пульт возьмёт её на себя.</p>`}
+  else off.style.display="none";
+  ["#cDay","#cRead"].forEach(s=>$(s).style.opacity=link?1:.55);
+  // день
+  const ov=b.override;
+  $("#phase").innerHTML=link?esc(PH[b.phase]||b.phase)+(b.phase==="asleep"?' <span class="pill night">в Discord «Неактивен»</span>':""):"—";
+  $("#plan").textContent=b.plan?(b.schedule_enabled?`По распорядку: ляжет около ${hm(b.plan.bed)}, встанет около ${hm(b.plan.wake)}`:"Распорядок выключен: не спит"):"";
+  $("#ovr").innerHTML=ov?`<span class="pill warn">${ov.mode==="awake"?"разбудили":"уложили"} · до ${hm(ov.until)} (ещё ${mins(ov.until)})</span>`:"";
+  const asleep=b.phase==="asleep";
+  $("#wakeRow").style.display=link&&asleep?"":"none";
+  $("#sleepRow").style.display=link&&!asleep?"":"none";
+  $("#bAuto").parentElement.style.display=ov?"":"none";
+  // чтение
+  const r=b.reading||{},bk=r.book||{};
+  $("#book").textContent=!link?"—":!r.enabled?"Чтение выключено":bk.title||"Читать нечего";
+  const pct=bk.total?Math.min(100,bk.pos/bk.total*100):0;
+  $("#bookBar").style.width=pct+"%";
+  $("#bookPos").textContent=bk.total?`прочитано ${pct.toFixed(1)}%`+(bk.last_session?` · последний раз в ${localHm(bk.last_session)}`:""):"";
+  let rs=[];
+  if(r.now)rs.push(`<span class="pill">читает прямо сейчас</span>`);
+  if(r.binge)rs.push(`<span class="pill warn">не может оторваться: отвечает с задержкой 1–4 мин</span>`);
+  if(r.paused_min)rs.push(`отвлекли, ещё ${r.paused_min} мин не сядет за книгу`);
+  if(r.queued)rs.push(`сядет читать, как только освободится`);
+  if(!rs.length&&r.enabled&&link)rs.push(asleep?"спит, не читает":"сейчас не читает");
+  $("#readState").innerHTML=rs.join(" ");
+  $("#bDistract").disabled=!link||!(r.now||r.binge);
+  $("#bRead").disabled=!link||!r.enabled||asleep||r.now;
+  // она
+  const v=b.voice||{};
+  $("#she").innerHTML=link?`<dt>Настроение</dt><dd>${esc(MOOD[b.mood]||b.mood)}${b.mood_reason?` <span class="muted">(${esc(b.mood_reason)})</span>`:""}</dd>
+    <dt>Энергия</dt><dd>${Math.round((b.energy||0)*100)}%</dd>
+    <dt>Модель</dt><dd>${b.busy?'<span class="warn">думает</span>':"свободна"}${b.idle_s!=null&&!b.busy?` <span class="muted">· последний запрос ${Math.round(b.idle_s/60)} мин назад</span>`:""}</dd>
+    <dt>Войс</dt><dd>${!v.enabled?'<span class="muted">выключен</span>':v.channels&&v.channels.length?esc(v.channels.join(", ")):'<span class="muted">не в войсе</span>'}</dd>
+    <dt>Серверов</dt><dd>${b.guilds??"—"}</dd>
+    <dt>Работает с</dt><dd>${b.started_at?localHm(b.started_at):"—"}</dd>`:`<dt class="muted">нет связи</dt><dd></dd>`;
+  // компьютер
+  const ol=S.ollama,g=S.gpu;
+  $("#sys").innerHTML=`<dt>Ollama</dt><dd>${ol==null?'<span class="muted">выключена</span>':ol.length?ol.map(m=>`${esc(m.name)} <span class="muted">${m.vram_gb} ГБ</span>`).join(", "):'<span class="muted">модель не загружена</span>'}</dd>
+    <dt>Голос F5</dt><dd>${S.f5?'<span class="ok">работает</span>':'<span class="muted">выключен (включается сам в войсе)</span>'}</dd>
+    <dt>Видеокарта</dt><dd>${g?`${g.used_gb} из ${g.total_gb} ГБ · загрузка ${g.util}%`:'<span class="muted">нет данных</span>'}</dd>`;
+  $("#game").checked=!!S.game;
+  $("#bUnload").disabled=!(ol&&ol.length);
+  $("#bF5").textContent=S.f5?"Выключить голос F5":"Включить голос F5";
+  // переключатели (перерисовка только при изменении — чтобы не прыгало под мышкой)
+  const tk=JSON.stringify(S.toggles||[]);
+  if(tk!==lastToggles){lastToggles=tk;const groups={};
+    (S.toggles||[]).forEach(t=>(groups[t.group]=groups[t.group]||[]).push(t));
+    $("#toggles").innerHTML=Object.entries(groups).map(([g,ts])=>`<div class="tgroup"><h3>${esc(g)}</h3>${ts.map(t=>
+      `<label class="sw"><input type="checkbox" data-key="${t.key}" ${t.value?"checked":""}>${esc(t.label)}</label>`).join("")}</div>`).join("")}
+  // пульт
+  const p=S.panel||{};$("#autoBot").checked=!!p.autostart_bot;$("#withWin").checked=!!p.with_windows;
+  $("#events").innerHTML=(S.events||[]).map(e=>`<li><time>${localHm(e.t)}</time><span class="${e.level==="error"?"err":e.level==="warn"?"warn":e.level==="ok"?"ok":""}">${esc(e.text)}</span></li>`).join("")||'<li class="muted">пока ничего</li>';
+}
+
+async function load(){try{S=await (await fetch("/api/status")).json();render()}catch(e){$("#hstate").textContent="пульт не отвечает";$("#hdot").className="dot err"}}
+async function loadLog(){
+  const d=await (await fetch("/api/log?n=200&only="+$("#logOnly").value)).json();
+  $("#log").innerHTML=d.lines.map(l=>`<div class="${l.level}"><span>${localHm(l.t)}</span><span>${esc(EV[l.event]||l.event)}</span><span>${esc(l.text)}</span></div>`).join("")||'<div class="muted">лог пуст</div>';
+}
+
+// вкладки
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
+  tab=b.dataset.tab;document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x===b));
+  $("#home").classList.toggle("active",tab==="home");$("#log-tab").classList.toggle("active",tab==="log");
+  const fr=tab==="settings"||tab==="people";$("#frames").classList.toggle("active",fr);
+  $("#fSettings").style.display=tab==="settings"?"":"none";$("#fPeople").style.display=tab==="people"?"":"none";
+  const f=tab==="settings"?$("#fSettings"):tab==="people"?$("#fPeople"):null;if(f&&!f.src)f.src=f.dataset.src;
+  if(tab==="log")loadLog();
+});
+
+$("#bStart").onclick=()=>act({do:"start"},"Запускаю…");
+$("#bRestart").onclick=()=>act({do:"restart"},"Перезапускаю…");
+$("#bStop").onclick=()=>{if(confirm("Остановить Ауру? Она аккуратно выйдет из войса."))act({do:"stop"},"Останавливаю…")};
+$("#bWake").onclick=()=>{const v=$("#wakeFor").value;act({do:"wake",minutes:v?+v:null},d=>`Проснулась, до ${hm(d.until)}. Личку разберёт сама.`)};
+$("#bSleep").onclick=()=>{const v=$("#sleepFor").value;act({do:"sleep",minutes:v?+v:null,quiet:$("#quiet").checked},d=>`Уснула до ${hm(d.until)}`)};
+$("#bAuto").onclick=()=>act({do:"auto"},"Обычный распорядок");
+$("#bDistract").onclick=()=>act({do:"distract"},d=>d.was_reading||d.was_binge?"Отложила книгу"+(d.pending_woken?", отвечает на ждущие сообщения":""):"Она и так не читала");
+$("#bRead").onclick=()=>act({do:"read"},"Сядет читать, как только модель освободится");
+$("#bUnload").onclick=()=>act({do:"unload"},d=>"Выгружено: "+esc((d.done||[]).join(", ")||"ничего"));
+$("#bF5").onclick=()=>act({do:"f5",value:!S.f5},S.f5?"Голос выключен":"Голос F5 запускается, около минуты");
+$("#game").onchange=e=>act({do:"game",value:e.target.checked},e.target.checked?"Игровой режим включён: через ~10 с освободит видеопамять":"Игровой режим выключен");
+$("#toggles").onchange=async e=>{const k=e.target.dataset.key;if(!k)return;
+  const d=await act({do:"toggle",key:k,value:e.target.checked});lastToggles="";
+  if(d.ok)toast(d.live===false?`Сохранено. Подействует после перезапуска <button onclick="act({do:'restart'},'Перезапускаю…')">Перезапустить</button>`:d.live?"Применено сразу":"Сохранено",d.live===false?8000:2500)};
+$("#autoBot").onchange=e=>act({do:"panel_cfg",autostart_bot:e.target.checked},"Сохранено");
+$("#withWin").onchange=e=>act({do:"panel_cfg",with_windows:e.target.checked},e.target.checked?"Пульт будет запускаться с Windows":"Автозапуск выключен");
+$("#bQuit").onclick=()=>act({do:"quit"},"Пульт закрыт, Аура работает").then(()=>setTimeout(()=>window.close(),500));
+$("#bQuitAll").onclick=()=>{if(confirm("Выключить Ауру и закрыть пульт?"))act({do:"quit",stop_bot:true},"Выключаю…").then(()=>setTimeout(()=>window.close(),800))};
+$("#logOnly").onchange=loadLog;
+
+load();
+setInterval(()=>{if(!document.hidden&&tab!=="settings"&&tab!=="people")load()},2000);
+setInterval(()=>{if(!document.hidden&&tab==="log"&&$("#logLive").checked)loadLog()},3000);
+</script>
+</body></html>

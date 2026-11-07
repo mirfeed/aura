@@ -332,6 +332,16 @@ class MessageHandler:
         if message_id > self._last_msg_id.get(channel_id, 0):
             self._last_msg_id[channel_id] = message_id
 
+    def wake_pending(self) -> int:
+        """Отвлекли от книги — всё, что ждёт, пока она «оторвётся», читается сейчас.  → сколько разбудила."""
+        n = 0
+        for pend in self._pending_batch.values():
+            ev = pend.get("wake")
+            if ev is not None and not ev.is_set():
+                ev.set()
+                n += 1
+        return n
+
     def note_typing(self, channel_id: int, user_id: int) -> None:
         """Discord: человек печатает — она подождёт, пока он допишет."""
         key = (channel_id, user_id)

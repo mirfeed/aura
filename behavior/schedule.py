@@ -69,11 +69,36 @@ def binge_title(now: Optional[datetime] = None) -> str:
     return _binge["title"] if now < until.astimezone(now.tzinfo) else ""
 
 
-def phase(now: datetime | None = None) -> str:
-    """'asleep' | 'morning' | 'day' | 'night'."""
-    if not config.SCHEDULE_ENABLED:
-        return "day"
+# Ручное управление с пульта (tools/panel.py → core/control.py): разбудили или уложили спать.
+# mode: "awake" — не спит до until, даже если по распорядку пора; "asleep" — спит до until.
+_override: Dict[str, Any] = {"mode": "", "until": None, "at": None}
+
+
+def wake_up(until: datetime) -> None:
+    """Разбудить (или не дать уснуть) до until."""
+    _override.update(mode="awake", until=until, at=_local_now())
+
+
+def put_to_sleep(until: datetime) -> None:
+    """Уложить спать до until."""
+    _override.update(mode="asleep", until=until, at=_local_now())
+
+
+def clear_override() -> None:
+    """Вернуть обычный распорядок."""
+    _override.update(mode="", until=None, at=None)
+
+
+def override(now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Действующее ручное управление: {"mode", "until", "at"} или {} если его нет / истекло."""
     now = now or _local_now()
+    until = _override["until"]
+    if not _override["mode"] or until is None or now >= until.astimezone(now.tzinfo):
+        return {}
+    return dict(_override)
+
+
+def _natural_phase(now: datetime) -> str:
     for d in (now.date(), now.date() + timedelta(days=1)):
         bed, wake = _sleep_window(d, now.tzinfo)
         if _binge["late_wake"] == wake.date():
@@ -89,6 +114,38 @@ def phase(now: datetime | None = None) -> str:
     if now.hour >= 22 or now.hour < 6:
         return "night"
     return "day"
+
+
+def plan(now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Ближайшая ночь по распорядку: {"bed", "wake"} (если сейчас спит — эта ночь)."""
+    now = now or _local_now()
+    for d in (now.date(), now.date() + timedelta(days=1), now.date() + timedelta(days=2)):
+        bed, wake = _sleep_window(d, now.tzinfo)
+        if _binge["late_wake"] == wake.date():
+            wake += timedelta(hours=1)  # засиделась с книгой — проспала
+        if wake > now:
+            return {"bed": bed, "wake": wake}
+    return {}
+
+
+def next_wake(now: Optional[datetime] = None) -> datetime:
+    """Ближайший подъём по распорядку (если сейчас ночь сна — конец этой ночи)."""
+    now = now or _local_now()
+    return plan(now).get("wake") or now + timedelta(hours=8)
+
+
+def phase(now: datetime | None = None) -> str:
+    """'asleep' | 'morning' | 'day' | 'night'."""
+    now = now or _local_now()
+    ov = override(now)
+    if ov.get("mode") == "asleep":
+        return "asleep"
+    if not config.SCHEDULE_ENABLED:
+        return "day"
+    natural = _natural_phase(now)
+    if ov.get("mode") == "awake" and natural == "asleep":
+        return "morning"  # разбудили посреди сна — сонная, ворчит
+    return natural
 
 
 def is_asleep(now: datetime | None = None) -> bool:
@@ -108,6 +165,11 @@ def prompt_hint(now: datetime | None = None) -> str:
         "night": "Сейчас ночь — твоё время: ты бодрая, разговорчивая, охотно болтаешь.",
     }.get(phase(now), "")
     now = now or _local_now()
+    ov = override(now)
+    if ov.get("mode") == "awake" and _natural_phase(now) == "asleep":
+        mins = (now - ov["at"].astimezone(now.tzinfo)).total_seconds() / 60
+        hint += (" Тебя только что разбудили посреди сна — ты еле проснулась и ворчишь." if mins < 20 else
+                 " Тебя недавно разбудили, по-хорошему ты бы ещё спала — сонная, но уже отошла.")
     if _binge["late_wake"] == now.date() and phase(now) == "morning":
         hint += " Ночью ты засиделась с книгой и не выспалась."
     title = binge_title(now)

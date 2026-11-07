@@ -30,7 +30,7 @@ ENV_FILE = ROOT / ".env"
 PERSONA_FILE = ROOT / "persona.md"
 
 HOST = "127.0.0.1"
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 8765
 
 SECRET_KEYS = {"DISCORD_TOKEN"}
 _KEY_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
@@ -372,7 +372,7 @@ load();checkOllama();
 </script></body></html>"""
 
 
-def main() -> None:
+def make_app() -> web.Application:
     app = web.Application(middlewares=[same_origin])
     app.add_routes([
         web.get("/", index),
@@ -380,6 +380,11 @@ def main() -> None:
         web.get("/api/ollama", api_ollama),
         web.post("/api/save", api_save),
     ])
+    return app
+
+
+def main() -> None:
+    app = make_app()
     url = f"http://{HOST}:{PORT}"
     print(f"Настройки Ауры: {url}  (Ctrl+C — остановить)")
     try:

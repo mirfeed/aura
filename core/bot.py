@@ -121,6 +121,14 @@ class CompanionBot(discord.Client):
         self._next_read_min: float = 0.0
         self._last_read_try: float = 0.0
         self._binge_book: Optional[int] = None  # id книги, которую читает взапой
+        # Чтение идёт отдельной задачей — пульт может её прервать («отвлечь»).
+        self._read_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
+        self._read_started: Optional[datetime] = None  # когда началась текущая сессия чтения
+        self._read_pause_until: float = 0.0  # отвлекли — до этого момента (monotonic) не садится читать
+        self._read_now: bool = False  # с пульта: «почитай сейчас» — без ожидания интервала
+        self._prev_phase: str = ""
+        self._control: Any = None  # core.control.ControlServer
+        self._started_at = datetime.now(tz=timezone.utc)
         self._last_book_share: Dict[int, datetime] = {}  # кому и когда последний раз писала о книге
         self._next_life_event_h: float = 0.0
         # Сомневалась, отправлять ли сообщение, и спросила совета: ID советчика → что и кому.
@@ -216,6 +224,18 @@ class CompanionBot(discord.Client):
         # Day 4/5: warm up Whisper + Silero in the background.
         if self._voice is not None and config.VOICE_PRELOAD and not game_mode.active():
             asyncio.create_task(self._voice.preload())
+
+        # Пульт (tools/panel.py) управляет ею через локальный HTTP.
+        if self._control is None and config.CONTROL_PORT:
+            from core.control import ControlServer
+
+            self._control = ControlServer(self)
+            try:
+                await self._control.start()
+            except Exception as exc:  # noqa: BLE001
+                _logger.error("Control server failed", extra={"data": {"error": str(exc)}})
+                self._control = None
+        await self._apply_presence(schedule.phase())
 
     async def on_typing(self, channel: Any, user: Any, when: Any) -> None:
         """Человек печатает — она подождёт, пока он допишет, и ответит на всё разом."""
@@ -1261,10 +1281,96 @@ class CompanionBot(discord.Client):
     # Её день: напоминания, сон и подъём, дни рождения
     # ------------------------------------------------------------------
 
+    async def _apply_presence(self, phase: str) -> None:
+        """Спит — в Discord «Неактивен» (луна), не спит — «В сети»."""
+        status = discord.Status.idle if phase == "asleep" else discord.Status.online
+        try:
+            await self.change_presence(status=status)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("Presence update failed", extra={"data": {"error": str(exc)}})
+
+    async def check_phase(self) -> str:
+        """
+        Сменилась фаза дня (по часам или с пульта) — статус в Discord, «всё, я спать» / разбор лички.
+        Зовут и цикл жизни, и пульт сразу после «разбудить»/«уложить».
+        """
+        phase = schedule.phase()
+        prev = self._prev_phase
+        if phase == prev:
+            return phase
+        self._prev_phase = phase  # до любых await: второй вызов не повторит пожелание спокойной ночи
+        _logger.info("Day phase changed", extra={"data": {"from": prev, "to": phase}})
+        if (phase == "asleep") != (prev == "asleep") or not prev:
+            await self._apply_presence(phase)
+        if prev and phase == "asleep":
+            if self.reading_now or self._binge_book:
+                self.distract("уснула")
+            asyncio.create_task(self._say_goodnight_safe())
+        elif prev == "asleep" and config.DM_CATCHUP:
+            # Проснулась — разобрать личку, пришедшую за ночь.
+            if self._catchup_task is None or self._catchup_task.done():
+                self._catchup_task = asyncio.create_task(self._catch_up_dms())
+        return phase
+
+    async def _say_goodnight_safe(self) -> None:
+        if getattr(self, "_quiet_goodnight", False):
+            self._quiet_goodnight = False
+            return
+        try:
+            await self._say_goodnight()
+        except Exception as exc:  # noqa: BLE001
+            _logger.error("Goodnight failed", extra={"data": {"error": str(exc)}}, exc_info=True)
+
+    @property
+    def reading_now(self) -> bool:
+        """Прямо сейчас сидит над книгой (идёт сессия чтения)."""
+        return self._read_task is not None and not self._read_task.done() and self._read_started is not None
+
+    def distract(self, why: str = "отвлекли") -> Dict[str, Any]:
+        """Оторвать от книги: прервать сессию чтения, закончить запой, какое-то время не садиться читать."""
+        was_reading = self.reading_now
+        was_binge = bool(self._binge_book or schedule.binge_title())
+        if self._read_task is not None and not self._read_task.done():
+            self._read_task.cancel()
+        if was_binge:
+            _logger.info("Binge ended", extra={"data": {"why": why}})
+            self._binge_book = None
+            schedule.set_binge("", None)
+        self._next_read_min = 0.0
+        self._read_now = False
+        self._read_pause_until = time.monotonic() + config.READING_INTERVAL_MIN * 60
+        woke = self._message_handler.wake_pending() if self._message_handler is not None else 0
+        _logger.info("Distracted from reading", extra={"data": {
+            "why": why, "was_reading": was_reading, "was_binge": was_binge, "pending_woken": woke}})
+        return {"was_reading": was_reading, "was_binge": was_binge, "pending_woken": woke}
+
+    def read_now(self) -> None:
+        """С пульта: сесть почитать при первой возможности (как только модель свободна)."""
+        self._read_now = True
+        self._read_pause_until = 0.0
+        self._last_read_try = 0.0
+        self._start_reading()
+
+    def _start_reading(self) -> None:
+        if self._library is None or not config.READING_ENABLED or schedule.is_asleep():
+            return
+        if self._read_task is None or self._read_task.done():
+            self._read_task = asyncio.create_task(self._read_guarded())
+
+    async def _read_guarded(self) -> None:
+        try:
+            await self._maybe_read()
+        except asyncio.CancelledError:
+            _logger.info("Reading interrupted", extra={"data": {}})
+        except Exception as exc:  # noqa: BLE001
+            _logger.error("Reading tick failed", extra={"data": {"error": str(exc)}}, exc_info=True)
+        finally:
+            self._read_started = None
+
     async def _life_loop(self) -> None:
         await self.wait_until_ready()
-        prev_phase = schedule.phase()
-        _logger.info("Life loop started", extra={"data": {"phase": prev_phase}})
+        self._prev_phase = schedule.phase()
+        _logger.info("Life loop started", extra={"data": {"phase": self._prev_phase}})
         while not self.is_closed():
             await asyncio.sleep(20)
             try:
@@ -1273,23 +1379,14 @@ class CompanionBot(discord.Client):
                         await self._reminders.mark_done(r["id"])  # сначала отметить — не повторить при сбое
                         await self._fire_reminder(r)
 
-                phase = schedule.phase()
-                if phase != prev_phase:
-                    _logger.info("Day phase changed", extra={"data": {"from": prev_phase, "to": phase}})
-                    if phase == "asleep":
-                        await self._say_goodnight()
-                    elif prev_phase == "asleep" and config.DM_CATCHUP:
-                        # Проснулась — разобрать личку, пришедшую за ночь.
-                        if self._catchup_task is None or self._catchup_task.done():
-                            self._catchup_task = asyncio.create_task(self._catch_up_dms())
-                    prev_phase = phase
+                phase = await self.check_phase()
 
                 if config.BIRTHDAYS_ENABLED and phase not in ("asleep",):
                     await self._maybe_congratulate()
-                if self._life is not None and phase != "asleep" and not game_mode.active():
+                if self._life is not None and config.LIFE_EVENTS_ENABLED and phase != "asleep" and not game_mode.active():
                     await self._maybe_life_event()
-                if self._library is not None and phase != "asleep":
-                    await self._maybe_read()
+                if phase != "asleep":
+                    self._start_reading()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -1301,18 +1398,22 @@ class CompanionBot(discord.Client):
         binge = bool(schedule.binge_title())
         if self._binge_book and not binge:
             await self._end_binge("время вышло")  # засиделась достаточно — пора отложить
-        if not self._next_read_min:
-            base = config.BINGE_INTERVAL_MIN if binge else config.READING_INTERVAL_MIN
-            self._next_read_min = base * random.uniform(0.67, 1.33)
-        last = await self._library.last_session_at()
-        if last is not None and (now - last).total_seconds() / 60 < self._next_read_min:
-            return
-        if (game_mode.active() and last is not None
-                and (now - last).total_seconds() / 60 < config.READING_INTERVAL_MIN):
-            return  # в игре сессия идёт ~75 с на процессоре (и чат её ждёт) — читает реже, без «запоя»
-        if time.monotonic() - self._last_read_try < 600:
-            return  # прошлая попытка не удалась — не долбить модель каждые 20 секунд
-        if self._pipeline.busy or self._pipeline.seconds_since_last_request < (45 if binge else 90):
+        forced = self._read_now
+        if not forced:
+            if time.monotonic() < self._read_pause_until:
+                return  # отвлекли с пульта — пока не до книги
+            if not self._next_read_min:
+                base = config.BINGE_INTERVAL_MIN if binge else config.READING_INTERVAL_MIN
+                self._next_read_min = base * random.uniform(0.67, 1.33)
+            last = await self._library.last_session_at()
+            if last is not None and (now - last).total_seconds() / 60 < self._next_read_min:
+                return
+            if (game_mode.active() and last is not None
+                    and (now - last).total_seconds() / 60 < config.READING_INTERVAL_MIN):
+                return  # в игре сессия идёт ~75 с на процессоре (и чат её ждёт) — читает реже, без «запоя»
+            if time.monotonic() - self._last_read_try < 600:
+                return  # прошлая попытка не удалась — не долбить модель каждые 20 секунд
+        if self._pipeline.busy or (not forced and self._pipeline.seconds_since_last_request < (45 if binge else 90)):
             return  # она разговаривает — книга подождёт
         if self._voice is not None and (self._voice.in_voice or self._voice.recently_active(300)):
             return  # в войсе с людьми — не до книжки
@@ -1321,6 +1422,8 @@ class CompanionBot(discord.Client):
         book = await self._library.current()
         if book is None:
             return
+        self._read_now = False
+        self._read_started = datetime.now(tz=timezone.utc)
         self._last_read_try = time.monotonic()
         illus: List[bytes] = []
         prev = await self._library.previous_volume(book)  # следующий том серии — помнит, что было раньше
@@ -1690,6 +1793,13 @@ class CompanionBot(discord.Client):
             self._life_task.cancel()
         if self._catchup_task is not None and not self._catchup_task.done():
             self._catchup_task.cancel()
+        if self._read_task is not None and not self._read_task.done():
+            self._read_task.cancel()
+        if self._control is not None:
+            try:
+                await self._control.stop()
+            except Exception:  # noqa: BLE001
+                pass
         if self._background_task is not None and not self._background_task.done():
             self._background_task.cancel()
             try:
