@@ -1383,6 +1383,8 @@ class CompanionBot(discord.Client):
 
                 if config.BIRTHDAYS_ENABLED and phase not in ("asleep",):
                     await self._maybe_congratulate()
+                if config.FOLLOWUPS_ENABLED and phase != "asleep" and not game_mode.active():
+                    await self._maybe_follow_up()
                 if self._life is not None and config.LIFE_EVENTS_ENABLED and phase != "asleep" and not game_mode.active():
                     await self._maybe_life_event()
                 if phase != "asleep":
@@ -1631,6 +1633,57 @@ class CompanionBot(discord.Client):
         self._binge_book = None
         schedule.set_binge("", None)
         self._next_read_min = 0.0
+
+    async def _maybe_follow_up(self) -> None:
+        """
+        «Ну как экзамен?» — ей рассказывали о событии, и время спросить пришло (memory/social.py → followups).
+        Пишет в личку тем, с кем уже переписывается; если человек сам с ней говорил после события — вопрос
+        уже был в промпте разговора, повторно не пишет.  Не больше одного за раз.
+        """
+        if self._message_handler is None or self.user is None or self._in_quiet_hours():
+            return
+        if self._pipeline.busy or self._pipeline.seconds_since_last_request < 60:
+            return
+        if self._voice is not None and self._voice.recently_active(120):
+            return
+        social = self._memory.social
+        now = datetime.now(tz=timezone.utc)
+        for fu in await social.due_followups():
+            ask_at = datetime.fromisoformat(fu["ask_at"])
+            if now - ask_at > timedelta(days=3):
+                await social.close_followup(fu["id"], 2)
+                continue
+            if not fu["raw_id"] or await social.get_affinity(fu["person_key"]) < 0:
+                continue
+            try:
+                user = self.get_user(fu["raw_id"]) or await self.fetch_user(fu["raw_id"])
+                dm = user.dm_channel or await user.create_dm()
+            except (discord.NotFound, discord.HTTPException):
+                await social.close_followup(fu["id"], 2)
+                continue
+            mine = await social.last_bot_line_at(dm.id)
+            if mine is not None and mine > ask_at:
+                await social.close_followup(fu["id"])  # уже переписывались после — вопрос был в её промпте
+                continue
+            if fu["channel_id"] != dm.id and await social.last_line(dm.id) is None:
+                continue  # в личке не общались — спросит, когда он(а) сам(а) заговорит с ней
+            ctx = await self._occasion_ctx(dm, user)
+            text = await self._pipeline.generate_occasion(
+                ctx,
+                f"Ты помнишь, что у {fu['person_name']} было: {fu['event']}. Напиши в личку сама, как живой друг: "
+                "спроси, как прошло. Одна короткая фраза, без длинного приветствия и без «мне напомнили».",
+                fallback="ну что, как прошло?",
+            )
+            await social.close_followup(fu["id"])
+            try:
+                async with dm.typing():
+                    await asyncio.sleep(min(8.0, 1.0 + len(text) / 6))
+                await dm.send(text)
+                await self._memory.log_bot_reply(ctx, text)
+                _logger.info("Followup sent", extra={"data": {"who": fu["person_name"], "event": fu["event"]}})
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+            return
 
     async def _maybe_life_event(self) -> None:
         """Время от времени с ней что-то случается — когда модель свободна."""

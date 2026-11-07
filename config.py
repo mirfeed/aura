@@ -391,6 +391,15 @@ CHAT_DROP_FINAL_PERIOD: bool = _get_bool("CHAT_DROP_FINAL_PERIOD", True)
 CHAT_TYPING_CPS: float = _get_float("CHAT_TYPING_CPS", 6.0)
 # Максимум «печатания» одного сообщения, секунд.
 CHAT_TYPING_MAX: float = _get_float("CHAT_TYPING_MAX", 18.0)
+# Опечатка, которую она через пару секунд исправляет (правкой сообщения или «*слово» вдогонку) — доля ответов.
+CHAT_TYPO_CHANCE: float = _get_float("CHAT_TYPO_CHANCE", 0.04)
+# Личка: на «ок», «спс», «ахах», стикер — как человек: чаще реакция или ничего, чем ответ.
+DM_ACK_QUIET: bool = _get_bool("DM_ACK_QUIET", True)
+DM_ACK_SKIP_CHANCE: float = _get_float("DM_ACK_SKIP_CHANCE", 0.8)
+# Сама спрашивает «ну как прошло?» про экзамен / собеседование / поездку, о которых ей рассказывали.
+FOLLOWUPS_ENABLED: bool = _get_bool("FOLLOWUPS_ENABLED", True)
+# Факты о человеке, которые давно не всплывали (и были один раз), она помнит смутно — «вроде», «если не путаю».
+SOCIAL_FACT_FADE_DAYS: int = _get_int("SOCIAL_FACT_FADE_DAYS", 45)
 # Сколько людей описывать в промпте и сколько фактов о каждом.
 SOCIAL_MAX_PEOPLE: int = _get_int("SOCIAL_MAX_PEOPLE", 6)
 SOCIAL_FACTS_PER_PERSON: int = _get_int("SOCIAL_FACTS_PER_PERSON", 8)

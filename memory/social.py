@@ -122,6 +122,21 @@ _SCHEMA_SQL = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_jokes_person ON inside_jokes(person_key)",
+    """
+    CREATE TABLE IF NOT EXISTS followups (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        person_key  TEXT NOT NULL,
+        person_name TEXT NOT NULL,
+        raw_id      INTEGER DEFAULT 0,
+        channel_id  INTEGER DEFAULT 0,
+        event       TEXT NOT NULL,
+        ask_at      TEXT NOT NULL,
+        created_at  TEXT NOT NULL,
+        done        INTEGER DEFAULT 0,
+        embedding   BLOB
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_followups_due ON followups(done, ask_at)",
 ]
 
 _MOODS = ["neutral", "curious", "tired", "amused", "withdrawn", "irritated", "cheerful"]
@@ -190,6 +205,18 @@ _REFLECT_SCHEMA: Dict[str, Any] = {
                 "required": ["name", "date"],
             },
         },
+        "followups": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "who": {"type": "string"},
+                    "event": {"type": "string"},
+                    "ask_at": {"type": "string"},
+                },
+                "required": ["who", "event", "ask_at"],
+            },
+        },
         "mood": {
             "type": "object",
             "properties": {
@@ -199,7 +226,7 @@ _REFLECT_SCHEMA: Dict[str, Any] = {
             "required": ["mood", "reason"],
         },
     },
-    "required": ["summary", "facts", "my_statements", "attitudes", "mood"],
+    "required": ["summary", "facts", "my_statements", "attitudes", "followups", "mood"],
 }
 
 
@@ -219,6 +246,24 @@ def _parse_ts(ts: str) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _parse_local(spec: str) -> Optional[datetime]:
+    """«2026-11-08 18:00» (её часовой пояс) → UTC datetime; None — не разобралось."""
+    from pipeline.text import _local_now
+
+    spec = spec.strip().replace("T", " ")[:16]
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(spec, fmt)
+            break
+        except ValueError:
+            dt = None
+    if dt is None:
+        return None
+    if len(spec) <= 10:
+        dt = dt.replace(hour=19)
+    return dt.replace(tzinfo=_local_now().tzinfo).astimezone(timezone.utc)
 
 
 def ago(ts: str) -> str:
@@ -676,13 +721,22 @@ class SocialMemory:
                 ctx.speaker_affinity = aff
 
             async with self._db.execute(
-                "SELECT fact, said_by, is_gossip, last_confirmed FROM facts WHERE subject_key = ?"
+                "SELECT fact, said_by, is_gossip, last_confirmed, times_seen FROM facts WHERE subject_key = ?"
                 " ORDER BY times_seen DESC, last_confirmed DESC LIMIT ?",
                 (key, max_facts or config.SOCIAL_FACTS_PER_PERSON),
             ) as cur:
                 facts = await cur.fetchall()
 
-            own = [f["fact"] for f in facts if not f["is_gossip"]]
+            # Давнее и всплывшее один раз она помнит смутно, как человек.
+            fade_s = config.SOCIAL_FACT_FADE_DAYS * 86400
+            now_dt = datetime.now(tz=timezone.utc)
+
+            def faded(f: Any) -> bool:
+                return (int(f["times_seen"] or 1) <= 1
+                        and (now_dt - _parse_ts(f["last_confirmed"])).total_seconds() > fade_s)
+
+            own = [f["fact"] for f in facts if not f["is_gossip"] and not faded(f)]
+            vague = [f["fact"] for f in facts if not f["is_gossip"] and faded(f)]
             gossip = [f"{f['said_by']} говорил(а): {f['fact']}" for f in facts if f["is_gossip"]]
 
             score10 = round(aff * 10)
@@ -724,6 +778,18 @@ class SocialMemory:
                 parts.append(f"День рождения: {bday}.")
             if own:
                 parts.append("Знаешь о нём/ней: " + "; ".join(own) + ".")
+            if vague:
+                parts.append("Помнишь смутно, это было давно (детали можешь путать, говори «вроде», «если я не "
+                             "путаю»): " + "; ".join(vague) + ".")
+            if key == speaker[0]:
+                async with self._db.execute(
+                    "SELECT event, ask_at FROM followups WHERE person_key = ? AND done = 0 AND ask_at <= ?"
+                    " ORDER BY ask_at LIMIT 2", (key, _now()),
+                ) as cur:
+                    due = [f"{r['event']} ({ago(r['ask_at'])})" for r in await cur.fetchall()]
+                if due:
+                    parts.append("Ты помнишь, что у него(неё) было: " + "; ".join(due) + " — если к месту, спроси, "
+                                 "как прошло, по-дружески, одной фразой (если он(а) сам(а) уже рассказал(а) — не спрашивай).")
             if gossip:
                 parts.append("Слышала от других: " + "; ".join(gossip) + ".")
             lines.append(" ".join(parts))
@@ -824,6 +890,12 @@ class SocialMemory:
             people_lines.append(line)
         other_known = sorted({n for n, k in self._names.items() if k not in speakers})[:40]
 
+        from pipeline.text import _local_now
+
+        _ln = _local_now()
+        now_local = _ln.strftime("%Y-%m-%d %H:%M") + ", " + (
+            "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")[_ln.weekday()]
+
         def fmt(r: Any) -> str:
             who = config.BOT_NAME if r["is_bot"] else r["speaker_name"]
             to = f" (ответ {r['reply_to']})" if r["reply_to"] else ""
@@ -872,6 +944,12 @@ class SocialMemory:
             "и это можно вспомнить потом; разовые хаханьки не нужны. Обычно пустой список.\n"
             "7. birthdays — если кто-то прямо назвал дату дня рождения (свою или другого участника): "
             "name — чей, date — в формате ДД.ММ. Только явно названные даты, не догадки. Обычно пустой список.\n"
+            f"8. followups — событие в жизни участника, о котором живой друг потом спросил бы «ну как прошло?»: "
+            "экзамен, собеседование, врач, поездка, турнир, свидание, переезд, концерт. who — чьё событие, event — "
+            "что за событие коротко («экзамен по физике», «собеседование в Яндекс»), ask_at — когда уместно спросить, "
+            "как прошло: ПОСЛЕ события, формат ГГГГ-ММ-ДД ЧЧ:ММ (время события неизвестно — вечер того же дня). "
+            f"Сейчас: {now_local}. Только реальные планы с понятным днём («завтра», «в пятницу», «через неделю»); "
+            f"не шутки, не планы {config.BOT_NAME}, не то, что уже прошло. Обычно пустой список.\n"
             "Используй имена ровно так, как они написаны в репликах."
         )
 
@@ -1019,6 +1097,33 @@ class SocialMemory:
                 stats["birthdays"] = stats.get("birthdays", 0) + 1
                 _logger.info("Birthday learned", extra={"data": {"key": key, "date": ddmm}})
 
+        # --- followups: спросить потом, как прошло ---
+        for fu in (data.get("followups") or [])[:3] if config.FOLLOWUPS_ENABLED else []:
+            name = str(fu.get("who") or "").strip()
+            event = str(fu.get("event") or "").strip()
+            key = self._resolve(name, speakers)
+            if not key or not event or name.lower() in (bot_low, "аура", "я"):
+                continue
+            when = _parse_local(str(fu.get("ask_at") or ""))
+            nowdt = datetime.now(tz=timezone.utc)
+            if when is None or not (nowdt + timedelta(minutes=30) <= when <= nowdt + timedelta(days=21)):
+                continue
+            vec = await self._safe_embed(event)
+            if vec is not None and await self._is_duplicate(
+                "SELECT embedding FROM followups WHERE person_key = ? AND done = 0", (key,), vec
+            ):
+                continue
+            async with self._db.execute("SELECT raw_id, name FROM people WHERE key = ?", (key,)) as cur:
+                p = await cur.fetchone()
+            await self._db.execute(
+                "INSERT INTO followups (person_key, person_name, raw_id, channel_id, event, ask_at, created_at, embedding)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (key, p["name"] if p else name, int(p["raw_id"] or 0) if p else 0, channel_id, event[:150],
+                 when.isoformat(), now, _blob(vec)),
+            )
+            stats["followups"] = stats.get("followups", 0) + 1
+            _logger.info("Followup planned", extra={"data": {"who": name, "event": event, "ask_at": when.isoformat()}})
+
         await self._db.commit()
         await self._reload_names()
 
@@ -1082,6 +1187,18 @@ class SocialMemory:
     # ------------------------------------------------------------------
     # Личка: кто ей писал, кому доверяет, что было в канале
     # ------------------------------------------------------------------
+
+    async def due_followups(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """«Ну как прошло?» — пора спросить (ask_at уже наступило)."""
+        async with self._db.execute(
+            "SELECT * FROM followups WHERE done = 0 AND ask_at <= ? ORDER BY ask_at LIMIT ?", (_now(), limit)
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def close_followup(self, fid: int, status: int = 1) -> None:
+        """1 — спросила / уже поговорили; 2 — устарело."""
+        await self._db.execute("UPDATE followups SET done = ? WHERE id = ?", (status, fid))
+        await self._db.commit()
 
     async def dm_partners(self, limit: int = 50) -> List[int]:
         """Discord-ID людей, с которыми она переписывалась в личке (свежие первыми)."""

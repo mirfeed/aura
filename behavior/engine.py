@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import config
 from behavior.state import BotState, Mood
@@ -121,7 +121,7 @@ class DecisionEngine:
         state.record_seen()
 
         # Compute shared timing values used whether or not we reply.
-        delay_seconds = self._compute_delay(state)
+        delay_seconds = self._compute_delay(state, context)
         typing_duration = self._compute_typing_duration()
 
         # Determine whether the message warrants extended reasoning.
@@ -315,19 +315,23 @@ class DecisionEngine:
             return True
         return False
 
-    def _compute_delay(self, state: BotState) -> float:
+    def _compute_delay(self, state: BotState, context: Any = None) -> float:
         """
-        Return a simulated thinking delay in seconds.
-
-        TIRED mood produces a longer, lazier pause.
+        Пауза до начала ответа: заметить сообщение + прочитать его (дольше для длинного и для картинки).
+        Уставшая — ленивее; близким отвечает чуть быстрее.
         """
         if schedule.binge_title():
             # Зачиталась: замечает сообщение не сразу, а когда оторвётся от книги.
             lo, hi = config.BINGE_REPLY_DELAY_S
             return random.uniform(lo, hi)
-        if state.mood == Mood.TIRED:
-            return random.uniform(4.0, 9.0)
-        return random.uniform(1.0, 3.5)
+        notice = random.uniform(4.0, 9.0) if state.mood == Mood.TIRED else random.uniform(0.8, 2.5)
+        text = getattr(context, "content", "") or ""
+        read = min(8.0, len(text) / random.uniform(18.0, 30.0))  # ~20-30 символов в секунду
+        if getattr(context, "attachments", None):
+            read += random.uniform(1.5, 3.5)  # рассмотреть картинку
+        if (getattr(context, "affinity", 0.0) or 0.0) >= 0.5:
+            notice *= 0.6
+        return notice + read
 
     def _compute_typing_duration(self) -> float:
         """

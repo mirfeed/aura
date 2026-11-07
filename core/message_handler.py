@@ -52,6 +52,62 @@ _HISTORY_LIMIT: int = config.CHAT_HISTORY_LIMIT
 # «Аура, забудь всё обо мне» — стирает факты и мнение о человеке.
 _FORGET_RE = re.compile(r"забудь\s+(?:вс[её]\s+)?(?:обо|про|о)\s+мне|забудь\s+меня", re.IGNORECASE)
 
+# «ок», «спс)», «ахах», «понял» — реплика, на которую в личке люди обычно не отвечают текстом.
+_ACK_WORDS = {
+    "ок", "окей", "оки", "окк", "окс", "ok", "okay", "kk", "k", "ага", "угу", "ясно", "ясн", "понял", "поняла",
+    "поняли", "понятно", "пон", "спс", "спасибо", "спасиб", "пасиб", "пасибо", "благодарю", "сенкс", "thx",
+    "thanks", "ty", "норм", "нормально", "хорошо", "лады", "ладно", "ну", "давай", "го", "хах", "хаха", "хахах",
+    "ахах", "ахаха", "ахахах", "азаз", "лол", "кек", "ору", "жиза", "пасиба", "найс", "nice", "класс", "круто",
+    "мило", "оо", "ооо", "пф", "хм", "мм", "да", "кайф", "топ", "база",
+}
+_ACK_STRIP_RE = re.compile(r"[^\wё\s]+", re.IGNORECASE)
+_LAUGH_RE = re.compile(r"^(?:[ах]{3,}|[хa]{3,}|лол|кек|ору|азаз\w*|ха\w*|аха\w*)$", re.IGNORECASE)
+
+
+def _is_ack(message: "discord.Message") -> str:
+    """'' — обычное сообщение; 'laugh' / 'ack' — «ахах» / «ок, спс» (или только смайлы/стикер) без вопроса."""
+    text = (message.content or "").strip()
+    if message.attachments or "?" in text or "http" in text:
+        return ""
+    if not text:
+        return "ack" if getattr(message, "stickers", None) else ""
+    words = _ACK_STRIP_RE.sub(" ", text.lower().replace("ё", "е")).split()
+    if not words:
+        return "ack"  # только смайлики / «)))»
+    if len(words) > 4 or not all(w in _ACK_WORDS or _LAUGH_RE.match(w) for w in words):
+        return ""
+    return "laugh" if all(_LAUGH_RE.match(w) for w in words) else "ack"
+
+
+# Соседние клавиши (ЙЦУКЕН) — для живой опечатки.
+_KEY_ROWS = ["йцукенгшщзхъ", "фывапролджэ", "ячсмитьбю"]
+_NEIGHBORS = {c: (row[i - 1] if i else "") + (row[i + 1] if i + 1 < len(row) else "")
+              for row in _KEY_ROWS for i, c in enumerate(row)}
+_TYPO_WORD_RE = re.compile(r"(?<![\wё])[а-яё]{5,}(?![\wё])")
+
+
+def _make_typo(text: str) -> Optional[Tuple[str, str, str]]:
+    """Опечатка в одном слове: (текст с опечаткой, слово с опечаткой, правильное слово) или None."""
+    if "```" in text or "http" in text or "<" in text:
+        return None
+    words = list(_TYPO_WORD_RE.finditer(text))
+    if not words:
+        return None
+    m = random.choice(words)
+    w = m.group(0)
+    i = random.randrange(1, len(w) - 1)
+    kind = random.random()
+    if kind < 0.45 and w[i] != w[i + 1]:
+        bad = w[:i] + w[i + 1] + w[i] + w[i + 2:]          # переставила две буквы
+    elif kind < 0.8 and _NEIGHBORS.get(w[i]):
+        bad = w[:i] + random.choice(_NEIGHBORS[w[i]]) + w[i + 1:]  # промахнулась клавишей
+    else:
+        bad = w[:i] + w[i + 1:]                            # пропустила букву
+    if bad == w:
+        return None
+    return text[:m.start()] + bad + text[m.end():], bad, w
+
+
 _REACTIONS = {
     "amused": ["😂", "😏", "👀", "💀"],
     "cheerful": ["😊", "💎", "👀", "✨"],
@@ -554,6 +610,16 @@ class MessageHandler:
                 if random.random() < 0.5:
                     asyncio.create_task(self._react_to_bait(message))
 
+        ack = ""
+        if (ctx.is_dm and decision.should_reply and not force_reply and not _followup and config.DM_ACK_QUIET
+                and not late_note):
+            ack = _is_ack(message)
+            if ack and not self._asked_last(ctx) and random.random() < config.DM_ACK_SKIP_CHANCE:
+                decision.should_reply = False
+                decision.reason = "dm_ack"
+                if random.random() < 0.6:
+                    asyncio.create_task(self._react_ack(message, ack))
+
         if force_reply:
             decision.should_reply = True
             decision.delay_seconds = 0.0
@@ -1016,6 +1082,41 @@ class MessageHandler:
         except (discord.Forbidden, discord.HTTPException):
             pass
 
+    async def _fix_typo(self, channel: Any, sent: discord.Message, right: str, typo: Tuple[str, str, str]) -> None:
+        """Заметила опечатку: чаще правит сообщение, иногда дописывает «*слово»."""
+        await asyncio.sleep(random.uniform(1.5, 4.5))
+        try:
+            if random.random() < 0.65:
+                await sent.edit(content=right)
+            else:
+                async with channel.typing():
+                    await asyncio.sleep(random.uniform(0.8, 1.6))
+                fix = await channel.send(f"*{typo[2]}")
+                self._seen(channel.id, fix.id)
+            _logger.info("Typo fixed", extra={"data": {"typo": typo[1], "word": typo[2]}})
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    @staticmethod
+    def _asked_last(ctx: MessageContext) -> bool:
+        """Её последняя реплика в переписке — вопрос: тогда «ок/да» — это ответ, на него отвечают."""
+        for line in reversed(ctx.recent_channel_history[-4:]):
+            stripped = re.sub(r"^\[[^\]]*\]\s*", "", line)
+            if stripped.startswith(config.BOT_NAME + ":") or stripped.startswith(config.BOT_NAME + " "):
+                return "?" in stripped
+        return False
+
+    async def _react_ack(self, message: discord.Message, kind: str) -> None:
+        """Личка, «ок/спс/ахах»: вместо ответа — реакция, как люди."""
+        pool = (["😂", "💀", "😭"] if kind == "laugh" else
+                ["❤️", "👍", "🫶"] if self._state.mood.value in ("cheerful", "amused") else ["👍", "❤️", "👌"])
+        try:
+            await asyncio.sleep(random.uniform(1.5, 6.0))
+            await message.add_reaction(random.choice(pool))
+            _logger.info("Ack reaction", extra={"data": {"message_id": message.id, "kind": kind}})
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
     async def _maybe_react(self, message: discord.Message, relevance: float) -> None:
         """Иногда вместо ответа — просто реакция, как делают люди."""
         if relevance < 0.2 or random.random() > config.REACTION_PROBABILITY:
@@ -1220,6 +1321,11 @@ class MessageHandler:
             lines = [l for l in content.splitlines() if l.strip()]
             if 2 <= len(lines) <= 4:
                 chunks = lines
+        # Иногда опечатка, которую она тут же исправляет (в памяти остаётся правильный текст).
+        typo_at, typo = -1, None
+        if chunks and random.random() < config.CHAT_TYPO_CHANCE:
+            typo_at = random.randrange(len(chunks))
+            typo = _make_typo(chunks[typo_at])
         try:
             # Один ответ за раз: пока она «допечатывает» одному, следующий ждёт — без перемешивания.
             async with self._channel_lock(channel):
@@ -1239,16 +1345,19 @@ class MessageHandler:
                     if i == 0:
                         reply_to = reply_to or self._buried(channel, reply_if_buried)
                     sent = None
+                    out = typo[0] if (typo and i == typo_at) else chunk
                     if i == 0 and reply_to is not None:
                         try:
-                            sent = await reply_to.reply(chunk, mention_author=False)
+                            sent = await reply_to.reply(out, mention_author=False)
                         except discord.HTTPException:
                             # Сообщение успели удалить — отвечаем просто в канал.
-                            sent = await channel.send(chunk)
+                            sent = await channel.send(out)
                     else:
-                        sent = await channel.send(chunk)
+                        sent = await channel.send(out)
                     if sent is not None:
                         self._seen(channel.id, sent.id)
+                        if typo and i == typo_at:
+                            await self._fix_typo(channel, sent, chunk, typo)
                 if not chunks:
                     reply_to = reply_to or self._buried(channel, reply_if_buried)
                 for i, path in enumerate(media or []):
