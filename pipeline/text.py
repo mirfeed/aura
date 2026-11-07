@@ -1990,6 +1990,7 @@ class TextPipeline:
                     out.extend(frames)
                     pictures += 1
                     break
+        context.picture_count = pictures
         if out:
             _logger.info("Images attached to prompt", extra={"data": {
                 "pictures": pictures, "frames": len(out), "gif": bool(getattr(context, "is_gif", False))}})
@@ -2404,7 +2405,11 @@ class TextPipeline:
                      + " она приложена, ты её снова видишь;")
                     if recalled else
                     f" [картинка, которую недавно прислал(а) {src}, всё ещё перед тобой — она приложена, ты её видишь;"
-                    if src else " [приложил(а) картинку — она прикреплена к этому сообщению, ты её видишь;")
+                    if src else
+                    f" [прислал(а) {context.picture_count} картинки — они приложены по порядку, ты их видишь; "
+                    "отреагируй на них вместе, а не по пунктам;"
+                    if getattr(context, "picture_count", 1) > 1 else
+                    " [приложил(а) картинку — она прикреплена к этому сообщению, ты её видишь;")
             if getattr(context, "is_gif", False):
                 seen += (" это гифка — тебе приложены несколько её кадров по порядку, "
                          "так что ты видишь и что на ней, и что в ней происходит;")

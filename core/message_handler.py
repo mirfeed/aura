@@ -370,7 +370,8 @@ class MessageHandler:
         return lock
 
     async def handle(self, message: discord.Message, late_note: str = "", force_reply: bool = False,
-                     _followup: Optional[List[discord.Message]] = None) -> None:
+                     _followup: Optional[List[discord.Message]] = None,
+                     _catchup: Optional[List[discord.Message]] = None) -> None:
         """
         Process a single incoming Discord message end-to-end.
 
@@ -399,6 +400,13 @@ class MessageHandler:
         ctx.late_note = late_note
         if _followup:  # контекст — от первого из дописанных; вложения остальных добавит склейка ниже
             ctx.content = "\n".join(m.content for m in _followup if m.content)
+        if _catchup and len(_catchup) > 1:
+            # Пришло без неё несколько сообщений — она видит их все, с картинками (свежие — первыми в лимит).
+            ctx.content = "\n".join(m.content for m in _catchup if m.content)
+            urls: List[str] = []
+            for m in reversed(_catchup):
+                urls += [a.url for a in m.attachments] + _embed_media(m)
+            ctx.attachments = list(reversed(urls[: max(1, config.VISION_MAX_IMAGES)]))
 
         log_message_received(
             message_id=ctx.message_id,
@@ -816,11 +824,12 @@ class MessageHandler:
         n = len(missed)
         note = (
             f"тебя не было в сети, ты только что зашла и увидела "
-            f"{'это сообщение' if n == 1 else f'{n} новых сообщения(й)'} — последнее пришло {when}. "
-            "Ответь на всё, что тебе написали, одним ответом; можешь коротко упомянуть, что не была в сети, "
-            "но не извиняйся долго"
+            f"{'это сообщение' if n == 1 else f'{n} новых сообщения(й), они все в «Новом сообщении»'}"
+            f" — последнее пришло {when}. Отреагируй на то, что тебе прислали (картинки — на них самих), "
+            "одним ответом, как в живой переписке. Не начинай с «привет, только зашла» и не оправдывайся, "
+            "что не была в сети: это и так понятно"
         )
-        await self.handle(last, late_note=note)
+        await self.handle(last, late_note=note, _catchup=missed)
 
     # ------------------------------------------------------------------
     # Private helpers
