@@ -1789,6 +1789,8 @@ class TextPipeline:
         text, wanted = MediaPicker.extract(raw)
         if not wanted:
             return raw
+        if getattr(context, "lewd", False):
+            return text  # на пошлую просьбу ничего не кидает, даже «вместо»
         asked = MediaPicker.asked(context.content)
         if not asked and not self._media.cooled_down(context.channel_id):
             _logger.info("Media skipped (cooldown)", extra={"data": {"wanted": wanted}})

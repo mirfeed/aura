@@ -56,6 +56,10 @@ _VAGUE_WHAT_RE = _re.compile(r"^\s*(?:(?:мо[её]|то|это|тот|та|мо
 _FORWARD_THIS_RE = _re.compile(r"(?<![\wё])(?:это|эту|этот|эти|скрин\w*|фот\w*|картинк\w*|пикч\w*|видос\w*|"
                                r"видео|файл\w*|мем\w*|гифк\w*)(?![\wё])", _re.IGNORECASE)
 
+# «уже не надо», «забей», «отмена» — передумал пересылать.
+_RELAY_CANCEL_RE = _re.compile(r"(?:уже\s+)?не\s+надо|забей|отмен\w*|проехали|неважно|не\s+важно|"
+                               r"передумал\w*|не\s+нужно|уже\s+не\s+нужно", _re.IGNORECASE)
+
 _RELAY_WORDS = _re.compile(
     r"\b(?:напиши|передай|скажи|отправь|отправить|отправишь|черкни|маякни|спроси|скинь|скинуть|перешли|"
     r"переслать|разошли|разослать)\b", _re.IGNORECASE)
@@ -828,6 +832,11 @@ class CompanionBot(discord.Client):
         unknown: List[str] = []          # имена, которых она не знает
         targets: Dict[int, str] = {}     # raw_id → имя
         learned: Dict[int, str] = {}     # raw_id → новое прозвище
+        if pending is not None and _RELAY_CANCEL_RE.search(text_in):
+            self._drop_pending_relay(message.author.id)
+            self._relay_last.pop(message.author.id, None)
+            return ("он(а) передумал(а) пересылать — больше не спрашивай, кому передать, и не возвращайся к этому; "
+                    "просто продолжай разговор")
         if pending is not None:
             found_keys = social.find_names_in_text(text_in, by_sound=True)
             if not others and not found_keys:
@@ -843,8 +852,12 @@ class CompanionBot(discord.Client):
                 # Могли заодно уточнить, что передать («им надо скинуть про печеньку»).
                 reparsed = await self._pipeline.parse_relay(message.author.display_name, text_in,
                                                             ctx.recent_channel_history)
-                if reparsed and reparsed.get("message"):
-                    what, request = reparsed["message"], text_in
+                new_what = (reparsed or {}).get("message") or ""
+                # «ему: 5423…» — это кому, а не что (ID, ник и «скинь ему» сами по себе — не текст сообщения).
+                if new_what and len(_re.sub(r"[\d\s<@!>.,:;-]+", "", new_what)) >= 6 \
+                        and not any(n.lower() in new_what.lower() and len(new_what) < len(n) + 8
+                                    for n in [m.display_name for m in others] + pending["unknown"]):
+                    what, request = new_what, text_in
                 anonymous = bool(pending.get("anonymous"))
                 own_words = bool(pending.get("own_words"))
                 for m in others:
@@ -876,7 +889,14 @@ class CompanionBot(discord.Client):
             what = parsed["message"] or text_in
             anonymous = bool(parsed.get("anonymous"))
             own_words = bool(parsed.get("own_words"))
-            names = [n for n in parsed["targets"] if n.strip().lower() not in _RELAY_PRONOUNS]
+            low_in = text_in.lower()
+            # Адресат должен звучать в самой просьбе: имена из её собственных реплик («загадочный персонаж») — нет.
+            names = [n for n in parsed["targets"] if n.strip().lower() not in _RELAY_PRONOUNS
+                     and (n.strip().lower() in ("мне", "меня", "я", "себе")
+                          or n.strip().lower()[:4] in low_in or _re.search(r"\d{15,}", low_in))]
+            if (isinstance(message.channel, discord.DMChannel) and not others and names
+                    and all(n.strip().lower() in ("мне", "меня", "я", "себе") for n in names)):
+                return ""  # «скинь мне …» в личке — это просьба к ней самой, а не пересылка
             last = self._relay_last.get(message.author.id)
             if last is not None and (now - last["at"]).total_seconds() > config.RELAY_FOLLOWUP_S:
                 last = None
@@ -1612,6 +1632,10 @@ class CompanionBot(discord.Client):
         if not finished and result.get("share"):
             # То, чем ей захотелось поделиться, — уже готовое сообщение в её стиле (с цитатой и реакцией).
             text = re.sub(r"\s+", " ", result["share"]).strip()  # одним сообщением — цитату не резать
+            # Модель иногда отдаёт поломанный JSON: «…способности).", "hooked": 7» — хвост отрезать.
+            text = re.split(r'"\s*,\s*"\w+"\s*:', text)[0].strip().strip('"').strip()
+            from pipeline.text import _no_dashes, _strip_emoji
+            text = _no_dashes(text if config.CHAT_EMOJI else _strip_emoji(text)).strip()
         else:
             text = await self._pipeline.generate_occasion(ctx, task, fallback="")
         if not text:

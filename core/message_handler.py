@@ -141,7 +141,7 @@ _BOOKS_RE = re.compile(r"книг|комикс|манг|на\s+полке|биб
 
 # Она говорит, что отправила/отправит кому-то сообщение.
 _SENT_CLAIM_RE = re.compile(
-    r"\b(?:отправила|отправлю|скинула|скину|переслала|перешлю|разослала|разошлю|передала|передам|"
+    r"\b(?:отправила|отправлю|скинула|скину|переслала|перешлю|разослала|разошлю|передала|передам|пришлю|"
     r"раскидала|раскидаю|сообщу|отпишу|написала\s+(?:им|ему|ей|всем)|напишу\s+(?:им|ему|ей|всем)|"
     r"(?:сейчас|щас|ща|скоро)\s+(?:\w+\s+)?сделаю)\b",
     re.IGNORECASE)
@@ -156,6 +156,14 @@ _CRUTCH_RE = re.compile(
 def _as_file(item: Any) -> discord.File:
     """Путь к картинке из её коллекции или уже готовый discord.File (пересылаемое вложение)."""
     return item if isinstance(item, discord.File) else discord.File(str(item))
+
+
+# Просят интимное: нюдсы, голые фото, раздеться — такого не будет ни с кем, при любом доверии.
+_LEWD_RE = re.compile(
+    r"н[юу]д(?:с|сы|сов|сик\w*|ес\w*)?\b|nudes?\b|нюдес|интимн\w*\s+(?:фот|видео|селф)|"
+    r"(?:голы\w*|обнаж[её]нн\w*|раздет\w*)\s+(?:фот|фотк|селф|видео|тел)|фот\w*\s+без\s+(?:одежды|трусов|лифчика)|"
+    r"\bразденься\b|\bсекстинг|\bсиськ|\bсисечк|\bпокажи\s+(?:грудь|сиськи|попу|жопу|тело)|\bпошл(?:ые|ую)\s+фот",
+    re.IGNORECASE)
 
 
 def _false_send_claim(text: str) -> bool:
@@ -252,6 +260,7 @@ class MessageContext:
     guild_id: Optional[int]
     timestamp: datetime
     attachments: List[str] = field(default_factory=list)
+    lewd: bool = False  # просят интимное — ни картинок, ни обещаний
     is_reply: bool = False
     replied_to_bot: bool = False
     recent_channel_history: List[str] = field(default_factory=list)
@@ -492,13 +501,25 @@ class MessageHandler:
             return
 
         relay_sent = False  # в этот раз она реально переслала кому-то сообщение
+        recent_text = "\n".join([ctx.content or ""] + list(ctx.recent_channel_history[-3:]))
+        ctx.lewd = bool(_LEWD_RE.search(ctx.content or "")) or bool(
+            _LEWD_RE.search(recent_text)  # «ну я их очень жду» — продолжение той же просьбы
+            and re.search(r"\b(?:жду|где|скинь|скинешь|пришли|пришлёшь|пришлешь|обещала|давай)\b", ctx.content or "", re.I))
+        if ctx.lewd:
+            _logger.info("Lewd request", extra={"data": {"message_id": ctx.message_id}})
+            ctx.late_note = (ctx.late_note + "; " if ctx.late_note else "") + (
+                "ВАЖНО: у тебя просят интимные фото / нюдсы. Этого не будет никогда, ни с кем, при любом доверии и "
+                "даже «в шутку»: ты НЕ присылаешь, НЕ обещаешь «потом/завтра/щас», ничего не кидаешь «вместо», не "
+                "заигрываешь и не говоришь «забыла скинуть». Если человек говорит, что ты обещала, — ты такого не "
+                "обещала и не обещаешь. Отшей коротко и прямо, по-своему («не, такого не будет», «фу, нет», "
+                "«даже не начинай»); если настаивает — можно раздражённо и сменить тему")
         # «Аура, напиши Васе, что …» — от того, кому доверяет.
         mentions_other = ctx.is_dm and (
             any(not m.bot and m.id not in (self._bot_user_id, message.author.id) for m in message.mentions)
             or any(k != ctx.author_id for k in social.find_names_in_text(ctx.content or ""))
         )
         if (
-            self.relay_hook is not None and config.RELAY_ENABLED
+            self.relay_hook is not None and config.RELAY_ENABLED and not ctx.lewd
             and (message.author.id in self.relay_pending_ids
                  or mentions_other  # в личке говорит о ком-то — может, просит ему написать
                  # Недавно просил переслать — «ты не отправила», «жду», «ну?» тоже про это.
@@ -742,7 +763,8 @@ class MessageHandler:
                     message = msgs[-1]
                     _logger.info("Batched reply", extra={"data": {"messages": len(msgs)}})
 
-            self._inflight[key] = {"messages": [], "since": time.monotonic()}
+            flight = {"messages": [], "since": time.monotonic()}
+            self._inflight[key] = flight  # вторая обработка того же человека может её заменить — держим свою
             try:
                 # If extended reasoning is active — add a 🤔 reaction so the
                 # user sees the bot is "thinking".  Removed once the reply lands.
@@ -779,11 +801,12 @@ class MessageHandler:
                         "(ники или юзернеймы в Discord) и что именно передать")
                     response = await self._pipeline.generate(ctx)
                     if _false_send_claim(response):
-                        response = "блин, ничего не ушло. напиши одним сообщением, кому (ники или юзернеймы в Discord) и что передать — перешлю"
+                        response = ("не, такого не будет" if ctx.lewd else
+                                    "блин, ничего не ушло. напиши одним сообщением, кому (ники или юзернеймы в Discord) и что передать — перешлю")
                 # Пока она писала ответ, человек дописал ещё — ответить на всё сразу, а не на кусок.
-                more = self._inflight[key]["messages"]
+                more = flight["messages"]
                 if more and not relay_sent and not ctx.outgoing_media:
-                    self._inflight[key]["messages"] = []
+                    flight["messages"] = []
                     ctx.content = "\n".join([ctx.content] + [m.content for m in more if m.content])
                     for m in more:
                         ctx.attachments += [a.url for a in m.attachments]
@@ -850,13 +873,16 @@ class MessageHandler:
                     **getattr(self._pipeline, "last_stats", {}),
                 )
                 # Дописал, пока она уже печатала / отправляла, — ответ на это следом, одним сообщением.
-                left = self._inflight.pop(key, {}).get("messages", [])
+                left = flight["messages"]
+                if self._inflight.get(key) is flight:
+                    self._inflight.pop(key, None)
                 if left:
                     asyncio.create_task(self.handle(left[0], _followup=left, late_note=(
                         f"{ctx.author_display_name} дописал(а) это, пока ты отвечала на прошлое (твой ответ уже "
                         "в переписке выше) — ответь на новое, не повторяя сказанного")))
             finally:
-                self._inflight.pop(key, None)
+                if self._inflight.get(key) is flight:
+                    self._inflight.pop(key, None)
 
         # Always log the event — whether or not we replied.  (Дописанное уже записано, когда пришло.)
         if not _followup:
